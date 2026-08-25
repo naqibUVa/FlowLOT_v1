@@ -63,17 +63,35 @@ def test_hdf5_pipeline_and_loader(tmp_path):
     with h5py.File(stage2) as h5:
         coupling = h5["cohort/6/T1/lot_embeddings/ab/patient0_hungarian/transport_matrices/P1"]
         assert coupling.shape == (6, 6)
+        attributes = h5["cohort/6/T1/lot_embeddings/ab/patient0_hungarian"].attrs
+        assert attributes["reference_size"] == 6
+        assert attributes["solver_kwargs_json"] == "{}"
         t2_reference_ids = h5[
             "cohort/6/T2/lot_embeddings/ab/patient0_hungarian/reference_patient_ids"
         ][...]
         assert list(t2_reference_ids) == [b"P1"]
+    compute_stage2_embeddings(
+        stage2,
+        "cohort",
+        6,
+        "ab",
+        "patient0",
+        "hungarian",
+        representation="map",
+        embedding_id="patient0_hungarian_map",
+    )
+    with Stage2Loader(stage2) as loader:
+        _, map_embeddings = loader.embeddings(
+            "cohort", 6, "T1", "ab", "patient0_hungarian_map"
+        )
+        assert map_embeddings.shape == (2, 12)
     stage1_inventory, stage1_issues = audit_stage1(tmp_path / "stage1.h5")
     assert len(stage1_inventory) == 3
     assert stage1_issues.empty
     stage2_inventories, stage2_issues = audit_stage2(stage2)
     assert len(stage2_inventories["raw"]) == 3
     assert len(stage2_inventories["preprocess"]) == 3
-    assert len(stage2_inventories["embeddings"]) == 2
+    assert len(stage2_inventories["embeddings"]) == 4
     assert stage2_issues.empty
 
 

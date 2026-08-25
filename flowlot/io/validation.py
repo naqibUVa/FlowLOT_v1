@@ -418,7 +418,15 @@ def audit_stage2(path: str | Path) -> tuple[dict[str, pd.DataFrame], pd.DataFram
                         if group_name == "lot_embeddings":
                             for preprocess_id, preprocess_group in group.items():
                                 for embedding_id, embedding in preprocess_group.items():
-                                    required = {"patient_ids", "embeddings", "reference_matrix"}
+                                    required = {
+                                        "patient_ids",
+                                        "reference_patient_ids",
+                                        "reference_matrix",
+                                        "embeddings",
+                                        "transport_costs",
+                                        "converged",
+                                        "sorted_cell_matrices",
+                                    }
                                     missing_embedding = required.difference(embedding.keys())
                                     if missing_embedding:
                                         _add_issue(
@@ -432,7 +440,18 @@ def audit_stage2(path: str | Path) -> tuple[dict[str, pd.DataFrame], pd.DataFram
                                     embedding_ids = _decode(embedding["patient_ids"][...])
                                     values = embedding["embeddings"]
                                     reference = embedding["reference_matrix"]
-                                    expected_width = int(np.prod(reference.shape))
+                                    costs = embedding["transport_costs"]
+                                    converged = embedding["converged"]
+                                    reference_cells = reference.shape[0] if reference.ndim else 0
+                                    reference_markers = (
+                                        reference.shape[1] if reference.ndim == 2 else 0
+                                    )
+                                    expected_width = (
+                                        int(np.prod(reference.shape))
+                                        if reference.ndim == 2
+                                        else -1
+                                    )
+                                    value_statistics = _matrix_stats(values)
                                     embedding_rows.append(
                                         {
                                             "dataset": dataset_name,
@@ -442,8 +461,23 @@ def audit_stage2(path: str | Path) -> tuple[dict[str, pd.DataFrame], pd.DataFram
                                             "embedding": embedding_id,
                                             "n_patients": len(embedding_ids),
                                             "embedding_width": values.shape[1] if values.ndim == 2 else 0,
-                                            "reference_cells": reference.shape[0],
-                                            "reference_markers": reference.shape[1],
+                                            "reference_cells": reference_cells,
+                                            "reference_markers": reference_markers,
+                                            "finite_fraction": value_statistics["finite_fraction"],
+                                            "mean_transport_cost": (
+                                                float(np.mean(costs)) if len(costs) else float("nan")
+                                            ),
+                                            "median_transport_cost": (
+                                                float(np.median(costs))
+                                                if len(costs)
+                                                else float("nan")
+                                            ),
+                                            "converged_fraction": (
+                                                float(np.mean(converged))
+                                                if len(converged)
+                                                else float("nan")
+                                            ),
+                                            "transport_matrices_stored": "transport_matrices" in embedding,
                                         }
                                     )
                                     if values.ndim != 2 or values.shape[0] != len(embedding_ids):
@@ -461,6 +495,57 @@ def audit_stage2(path: str | Path) -> tuple[dict[str, pd.DataFrame], pd.DataFram
                                             values.name,
                                             "embedding_width",
                                             f"Expected flattened width {expected_width}",
+                                        )
+                                    if reference.ndim != 2:
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            reference.name,
+                                            "reference_shape",
+                                            f"Expected 2D reference; found {reference.shape}",
+                                        )
+                                    if len(costs) != len(embedding_ids) or len(converged) != len(
+                                        embedding_ids
+                                    ):
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            embedding.name,
+                                            "embedding_metadata_lengths",
+                                            "Costs/convergence lengths differ from patient_ids",
+                                        )
+                                    sorted_ids = set(embedding["sorted_cell_matrices"].keys())
+                                    if sorted_ids != set(embedding_ids):
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            embedding["sorted_cell_matrices"].name,
+                                            "sorted_matrix_coverage",
+                                            "Sorted matrix patient IDs differ from embedding IDs",
+                                        )
+                                    if value_statistics["finite_fraction"] < 1:
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            values.name,
+                                            "finite_values",
+                                            f"Finite fraction is {value_statistics['finite_fraction']:.6f}",
+                                        )
+                                    if not np.isfinite(costs[...]).all():
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            costs.name,
+                                            "finite_transport_costs",
+                                            "Transport costs contain non-finite values",
+                                        )
+                                    if not np.isfinite(reference[...]).all():
+                                        _add_issue(
+                                            issues,
+                                            "error",
+                                            reference.name,
+                                            "finite_reference",
+                                            "Reference matrix contains non-finite values",
                                         )
     inventories = {
         "raw": pd.DataFrame(raw_rows),

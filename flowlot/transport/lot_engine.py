@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -150,6 +151,7 @@ def compute_stage2_embeddings(
     reference_patient_ids: Sequence[str] | None = None,
     reference_kwargs: dict[str, Any] | None = None,
     solver_kwargs: dict[str, Any] | None = None,
+    embedding_id: str | None = None,
 ) -> dict[str, tuple[int, int]]:
     """Compute one common reference and all patient LOT vectors per tube."""
 
@@ -189,18 +191,29 @@ def compute_stage2_embeddings(
                 random_state,
                 reference_kwargs or {},
             )
-            embedding_id = f"{reference_type}_{solver}"
+            resolved_embedding_id = embedding_id or f"{reference_type}_{solver}"
+            if not resolved_embedding_id.strip() or "/" in resolved_embedding_id:
+                raise ValueError("embedding_id must be a non-empty HDF5 key without '/'")
             root = tube.require_group(f"lot_embeddings/{preprocess_id}")
-            if embedding_id in root:
+            if resolved_embedding_id in root:
                 if not overwrite:
-                    raise ValueError(f"Embedding {embedding_id} already exists in tube {tube_id}")
-                del root[embedding_id]
-            output = root.create_group(embedding_id)
+                    raise ValueError(
+                        f"Embedding {resolved_embedding_id} already exists in tube {tube_id}"
+                    )
+                del root[resolved_embedding_id]
+            output = root.create_group(resolved_embedding_id)
             output.attrs.update(
                 reference_type=reference_type,
                 solver=solver,
                 representation=representation,
                 flatten_order="F",
+                random_state=random_state,
+                reference_size=size,
+                store_transport=store_transport,
+                reference_kwargs_json=json.dumps(
+                    reference_kwargs or {}, sort_keys=True, default=str
+                ),
+                solver_kwargs_json=json.dumps(solver_kwargs or {}, sort_keys=True, default=str),
             )
             output.create_dataset("reference_matrix", data=reference.astype(np.float32))
             output.create_dataset("patient_ids", data=np.asarray(patient_ids, dtype=UTF8))

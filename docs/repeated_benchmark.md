@@ -6,6 +6,13 @@ balanced training cohorts are nested, so the two-patient cohort is a subset of
 the four-patient cohort, and so on through 6 and 8 patients per class. Every LOT
 classifier, fusion method, FlowSOM run, and deep model reads these exact IDs.
 
+## Classification metrics
+
+Every job reports Accuracy, Balanced Accuracy, Macro F1, ROC-AUC, and PR-AUC.
+Balanced Accuracy and Macro F1 are emphasized for model ranking because class
+imbalance can make raw Accuracy optimistic. Binary ROC-AUC/PR-AUC use the
+positive-class probability; multiclass values are macro one-vs-rest summaries.
+
 The default `intersection` patient policy is required for strict comparisons
 across all tubes and models. It removes patients missing any selected tube before
 splitting. Missing-tube experiments can use `union`, but single-tube and cell

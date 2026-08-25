@@ -40,6 +40,8 @@ without replacement and seeded.
 │   └── {patient_id}/processed_matrix                float32 [N_i, d_t]
 └── lot_embeddings/{preprocess_id}/{reference}_{solver}/
     ├── @reference_type, @solver, @representation, @flatten_order
+    ├── @random_state, @reference_size, @store_transport
+    ├── @reference_kwargs_json, @solver_kwargs_json
     ├── patient_ids                                  UTF-8 [P_t]
     ├── reference_patient_ids                        UTF-8 [R_t]
     ├── reference_matrix                           float32 [M, d_t]
@@ -49,6 +51,11 @@ without replacement and seeded.
     ├── sorted_cell_matrices/{patient_id}          float32 [M, d_t]
     └── transport_matrices/{patient_id}            float32 [N_i, M]
 ```
+
+The final embedding key may be customized (for example,
+`pooled_sinkhorn_disp_run0`) so representations or split-specific references do
+not overwrite one another. `notebooks/03_lot_embeddings.ipynb` constructs and
+audits a grid of these stored representations.
 
 `marker_policy=intersection` aligns every sample in a tube to the ordered
 intersection of the first sample's markers; `strict` rejects any mismatch.

@@ -92,6 +92,9 @@ def run_main() -> None:
     parser.add_argument("--reference-size", type=int)
     parser.add_argument("--solver", choices=["hungarian", "linprog", "emd", "sinkhorn"], default="sinkhorn")
     parser.add_argument("--representation", choices=["displacement", "map"], default="displacement")
+    parser.add_argument(
+        "--embedding-id", help="Custom Stage 2 group name; defaults to reference_solver"
+    )
     parser.add_argument("--reg", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -117,6 +120,7 @@ def run_main() -> None:
             else None
         ),
         solver_kwargs={"reg": args.reg},
+        embedding_id=args.embedding_id,
     )
     print(json.dumps({tube: list(shape) for tube, shape in shapes.items()}, indent=2))
 

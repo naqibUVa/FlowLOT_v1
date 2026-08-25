@@ -74,13 +74,19 @@ Run the focused notebooks in order:
    manifests, builds the patient-centric HDF5, and reports per-dataset statistics.
 2. [`02_stage1_to_stage2.ipynb`](notebooks/02_stage1_to_stage2.ipynb) performs
    tube organization/preprocessing and validates raw, processed, and LOT shapes.
-3. [`03_split_verification.ipynb`](notebooks/03_split_verification.ipynb) creates
+3. [`03_lot_embeddings.ipynb`](notebooks/03_lot_embeddings.ipynb) computes and
+   stores multiple reference/solver LOT representations inside Stage 2.
+4. [`03_split_verification.ipynb`](notebooks/03_split_verification.ipynb) creates
    and proves the balanced, nested, disjoint shared classification splits.
-4. [`04_classification_analysis.ipynb`](notebooks/04_classification_analysis.ipynb)
+5. [`04_classification_analysis.ipynb`](notebooks/04_classification_analysis.ipynb)
    verifies HPC completion and produces rankings, bootstrap CIs, and diagnostics.
 
 The construction notebooks use explicit `RUN_BUILD`/`RUN_ORGANIZE` safety
 switches so audits can be reviewed before an HDF5 file is changed.
+
+Classification outputs include Accuracy, Balanced Accuracy, Macro F1, ROC-AUC,
+and PR-AUC. Balanced Accuracy and Macro F1 are the primary comparison plots
+because they weight minority classes more appropriately than raw Accuracy.
 
 See [the tutorial](docs/tutorial.md), [data architecture](docs/data_architecture.md),
 [shared-split HPC benchmarks](docs/repeated_benchmark.md),
