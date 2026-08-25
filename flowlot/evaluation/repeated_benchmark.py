@@ -582,12 +582,158 @@ def run_job(
     return output
 
 
+def _derived_seed(seed: int, *parts: object) -> int:
+    material = "|".join([str(seed), *(str(part) for part in parts)])
+    return int(hashlib.sha256(material.encode()).hexdigest()[:8], 16)
+
+
+def _patient_averaged_predictions(
+    rows: pd.DataFrame,
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    labels: dict[str, int] = {}
+    predictions: dict[str, list[np.ndarray]] = {}
+    for _, row in rows.iterrows():
+        for patient, label, probability in zip(
+            row["test_ids"], row["y_true"], row["probabilities"]
+        ):
+            label = int(label)
+            if patient in labels and labels[patient] != label:
+                raise ValueError(f"Patient {patient} has inconsistent bootstrap labels")
+            labels[patient] = label
+            predictions.setdefault(patient, []).append(np.asarray(probability, dtype=float))
+    patient_ids = sorted(predictions)
+    y_true = np.asarray([labels[patient] for patient in patient_ids])
+    probabilities = np.stack(
+        [np.mean(predictions[patient], axis=0) for patient in patient_ids]
+    )
+    return patient_ids, y_true, probabilities
+
+
+def patient_bootstrap_confidence_intervals(
+    frame: pd.DataFrame,
+    group_columns: Sequence[str] = ("dataset", "model", "aggregation", "tube", "k"),
+    iterations: int = 1000,
+    confidence_level: float = 0.95,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Stratified patient bootstrap over repeat-averaged test probabilities.
+
+    A patient appearing in several repeated test splits remains one bootstrap
+    unit. Its probabilities are averaged across appearances before resampling,
+    avoiding pseudo-replication while retaining training-split variability in
+    the patient-level prediction.
+    """
+
+    if iterations < 1:
+        raise ValueError("bootstrap iterations must be positive")
+    if not 0 < confidence_level < 1:
+        raise ValueError("confidence_level must be between zero and one")
+    metrics = ("accuracy", "balanced_accuracy", "macro_f1", "roc_auc", "pr_auc")
+    alpha = (1 - confidence_level) / 2
+    results = []
+    grouped = frame.groupby(list(group_columns), dropna=False, sort=True)
+    for key, rows in grouped:
+        key = key if isinstance(key, tuple) else (key,)
+        patient_ids, y_true, probabilities = _patient_averaged_predictions(rows)
+        observed = classification_metrics(y_true, probabilities)
+        classes = np.unique(y_true)
+        class_indices = [np.flatnonzero(y_true == label) for label in classes]
+        rng = np.random.default_rng(_derived_seed(seed, *key))
+        distributions = {metric: np.empty(iterations) for metric in metrics}
+        for iteration in range(iterations):
+            sampled = np.concatenate(
+                [rng.choice(indices, size=len(indices), replace=True) for indices in class_indices]
+            )
+            values = classification_metrics(y_true[sampled], probabilities[sampled])
+            for metric in metrics:
+                distributions[metric][iteration] = values[metric]
+        result: dict[str, object] = dict(zip(group_columns, key))
+        result.update(
+            n_unique_test_patients=len(patient_ids),
+            bootstrap_iterations=iterations,
+            confidence_level=confidence_level,
+        )
+        for metric in metrics:
+            distribution = distributions[metric]
+            finite = distribution[np.isfinite(distribution)]
+            result[f"{metric}_estimate"] = observed[metric]
+            result[f"{metric}_ci_lower"] = (
+                float(np.quantile(finite, alpha)) if len(finite) else float("nan")
+            )
+            result[f"{metric}_ci_upper"] = (
+                float(np.quantile(finite, 1 - alpha)) if len(finite) else float("nan")
+            )
+            result[f"{metric}_bootstrap_se"] = (
+                float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0
+            )
+        results.append(result)
+    return pd.DataFrame(results)
+
+
+def _bootstrap_mean_interval(
+    values: np.ndarray, iterations: int, confidence_level: float, seed: int
+) -> tuple[float, float]:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    sampled = rng.choice(values, size=(iterations, len(values)), replace=True).mean(axis=1)
+    alpha = (1 - confidence_level) / 2
+    return float(np.quantile(sampled, alpha)), float(np.quantile(sampled, 1 - alpha))
+
+
+def _export_bootstrap_latex(
+    table: pd.DataFrame, output: Path, size: int, confidence_level: float
+) -> None:
+    metrics = ("accuracy", "balanced_accuracy", "macro_f1", "roc_auc", "pr_auc")
+    best = {metric: table[f"{metric}_estimate"].max() for metric in metrics}
+    lines = [
+        "\\begin{table}[t]",
+        "\\centering",
+        f"\\caption{{Patient-bootstrap performance with {size} training patients per class.}}",
+        f"\\label{{tab:flowlot-bootstrap-k{size}}}",
+        "\\begin{tabular}{l" + "c" * len(metrics) + "}",
+        "\\toprule",
+        "Method & "
+        + " & ".join(metric.replace("_", " ").title() for metric in metrics)
+        + " \\\\",
+        "\\midrule",
+    ]
+    for _, row in table.iterrows():
+        method = f"{row['model']} / {row['aggregation']} / {row['tube']}".replace("_", "\\_")
+        cells = [method]
+        for metric in metrics:
+            estimate = row[f"{metric}_estimate"]
+            lower = row[f"{metric}_ci_lower"]
+            upper = row[f"{metric}_ci_upper"]
+            value = f"{estimate:.3f} [{lower:.3f}, {upper:.3f}]"
+            if np.isclose(estimate, best[metric], equal_nan=False):
+                value = f"\\textbf{{{value}}}"
+            cells.append(value)
+        lines.append(" & ".join(cells) + " \\\\")
+    percentage = confidence_level * 100
+    lines.extend(
+        [
+            "\\bottomrule",
+            "\\end{tabular}",
+            f"\\par\\small Patient-level stratified bootstrap {percentage:g}\\% confidence intervals.",
+            "\\end{table}",
+            "",
+        ]
+    )
+    output.write_text("\n".join(lines), encoding="utf-8")
+
+
 def aggregate_results(
     registry_path: str | Path,
     jobs_path: str | Path,
     shards_dir: str | Path,
     output_dir: str | Path,
     allow_incomplete: bool = False,
+    bootstrap_iterations: int = 1000,
+    confidence_level: float = 0.95,
+    bootstrap_seed: int = 42,
 ) -> dict[str, object]:
     registry = load_registry(registry_path)
     jobs = load_jobs(jobs_path)
@@ -629,6 +775,14 @@ def aggregate_results(
     summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
     summary = summary.reset_index()
     summary.to_csv(output / "summary.csv", index=False)
+    bootstrap = patient_bootstrap_confidence_intervals(
+        frame,
+        group_columns,
+        bootstrap_iterations,
+        confidence_level,
+        bootstrap_seed,
+    )
+    bootstrap.to_csv(output / "bootstrap_ci.csv", index=False)
     for size, table in summary.groupby("k"):
         latex_rows = []
         for _, row in table.iterrows():
@@ -645,6 +799,10 @@ def aggregate_results(
             caption=f"Repeated classification with {size} training patients per class.",
             label=f"tab:flowlot-k{size}",
         )
+    for size, table in bootstrap.groupby("k"):
+        _export_bootstrap_latex(
+            table, output / f"bootstrap_comparison_k{size}.tex", int(size), confidence_level
+        )
     paired_rows = []
     frame["method"] = frame[["model", "aggregation", "tube"]].agg(" / ".join, axis=1)
     for size, subset in frame.groupby("k"):
@@ -655,6 +813,12 @@ def aggregate_results(
             common = by_method[left].index.intersection(by_method[right].index)
             for metric in ("accuracy", "macro_f1"):
                 delta = by_method[left].loc[common, metric] - by_method[right].loc[common, metric]
+                ci_lower, ci_upper = _bootstrap_mean_interval(
+                    delta.to_numpy(),
+                    bootstrap_iterations,
+                    confidence_level,
+                    _derived_seed(bootstrap_seed, size, metric, left, right),
+                )
                 paired_rows.append(
                     {
                         "k": size,
@@ -665,25 +829,36 @@ def aggregate_results(
                         "mean_delta_a_minus_b": delta.mean(),
                         "std_delta": delta.std(ddof=1),
                         "a_win_fraction": (delta > 0).mean(),
+                        "bootstrap_ci_lower": ci_lower,
+                        "bootstrap_ci_upper": ci_upper,
                     }
                 )
     pd.DataFrame(paired_rows).to_csv(output / "paired_comparisons.csv", index=False)
     apply_nature_style()
-    figure_frame = frame.copy()
+    figure_frame = bootstrap.copy()
+    figure_frame["method"] = figure_frame[["model", "aggregation", "tube"]].agg(
+        " / ".join, axis=1
+    )
     fig, axes = plt.subplots(1, 2, figsize=(7.2, 2.8), sharex=True)
     for axis, metric, title in zip(
         axes, ["balanced_accuracy", "macro_f1"], ["Balanced accuracy", "Macro F1"]
     ):
-        sns.lineplot(
-            data=figure_frame,
-            x="k",
-            y=metric,
-            hue="method",
-            estimator="mean",
-            errorbar="sd",
-            marker="o",
-            ax=axis,
-        )
+        for method, values in figure_frame.groupby("method"):
+            values = values.sort_values("k")
+            estimate = values[f"{metric}_estimate"].to_numpy()
+            lower = values[f"{metric}_ci_lower"].to_numpy()
+            upper = values[f"{metric}_ci_upper"].to_numpy()
+            axis.errorbar(
+                values["k"],
+                estimate,
+                yerr=np.vstack(
+                    [np.maximum(estimate - lower, 0), np.maximum(upper - estimate, 0)]
+                ),
+                marker="o",
+                capsize=2,
+                linewidth=1,
+                label=method,
+            )
         axis.set(xlabel="Training patients per class", ylabel=title, ylim=(0, 1.02))
         axis.legend().remove()
     handles, labels = axes[0].get_legend_handles_labels()
@@ -698,6 +873,9 @@ def aggregate_results(
         "missing_job_ids": missing,
         "unexpected_job_ids": unexpected,
         "registry_hash": registry["registry_hash"],
+        "bootstrap_iterations": bootstrap_iterations,
+        "confidence_level": confidence_level,
+        "bootstrap_seed": bootstrap_seed,
     }
     _atomic_json(integrity, output / "integrity.json")
     return integrity
@@ -747,6 +925,9 @@ def _parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--shards", type=Path, required=True)
     aggregate.add_argument("--output", type=Path, required=True)
     aggregate.add_argument("--allow-incomplete", action="store_true")
+    aggregate.add_argument("--bootstrap-iterations", type=int, default=1000)
+    aggregate.add_argument("--confidence-level", type=float, default=0.95)
+    aggregate.add_argument("--bootstrap-seed", type=int, default=42)
     return parser
 
 
@@ -791,7 +972,14 @@ def main() -> None:
         print(json.dumps({"output": str(output), "index": args.index}, indent=2))
     else:
         integrity = aggregate_results(
-            args.splits, args.jobs, args.shards, args.output, args.allow_incomplete
+            args.splits,
+            args.jobs,
+            args.shards,
+            args.output,
+            args.allow_incomplete,
+            args.bootstrap_iterations,
+            args.confidence_level,
+            args.bootstrap_seed,
         )
         print(json.dumps(integrity, indent=2))
 

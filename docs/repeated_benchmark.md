@@ -59,15 +59,35 @@ For a local smoke run:
 FLOWLOT_LOCAL_JOBS=2 bash scripts/hpc_repeated_benchmark.sh local
 ```
 
+## Bootstrap confidence intervals
+
+Aggregation computes deterministic, stratified patient-level percentile
+confidence intervals. Predictions from repeated test appearances are first
+averaged for each patient, so a frequently sampled patient is still one
+bootstrap unit. Patients are then sampled with replacement within each class,
+which preserves class balance and keeps ROC-AUC and PR-AUC estimable. The same
+procedure covers accuracy, balanced accuracy, macro F1, ROC-AUC, and PR-AUC.
+
+Configure the analysis with `FLOWLOT_BOOTSTRAP_ITERATIONS` (2,000 in the example),
+`FLOWLOT_CONFIDENCE_LEVEL` (0.95), and `FLOWLOT_BOOTSTRAP_SEED`. Paired method
+deltas use a paired bootstrap over common repeated runs. This distinguishes the
+patient-level performance interval from the ordinary between-run mean and
+standard deviation retained in `summary.csv`.
+
 ## Outputs
 
 The aggregate directory contains:
 
 - `per_run.csv`: one row per classifier/fusion/repeat/k;
 - `summary.csv`: mean, standard deviation, and count;
-- `paired_comparisons.csv`: paired deltas and win fractions across every method;
+- `bootstrap_ci.csv`: patient-averaged estimates, bootstrap standard errors, and
+  confidence limits;
+- `paired_comparisons.csv`: paired deltas, bootstrap confidence limits, and win
+  fractions across every method;
 - `comparison_k*.tex`: booktabs tables;
-- `aggregation_comparison.{pdf,svg,png}`: vector/publication figures;
+- `bootstrap_comparison_k*.tex`: estimates with bracketed confidence intervals;
+- `aggregation_comparison.{pdf,svg,png}`: vector/publication figures with
+  bootstrap confidence bars;
 - `integrity.json`: expected, completed, missing, and unexpected job IDs.
 
 The companion notebook `notebooks/legacy_repeated_benchmark.ipynb` audits cohort

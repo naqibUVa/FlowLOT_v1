@@ -15,6 +15,7 @@ from flowlot.evaluation.repeated_benchmark import (
     export_legacy_splits_h5,
     load_jobs,
     load_registry,
+    patient_bootstrap_confidence_intervals,
     run_job,
 )
 
@@ -132,6 +133,8 @@ def test_jobs_use_identical_ids_and_aggregate(tmp_path):
         jobs_path,
         tmp_path / "results/shards",
         tmp_path / "aggregate",
+        bootstrap_iterations=50,
+        bootstrap_seed=11,
     )
     assert integrity["completed_jobs"] == len(jobs)
     per_run = pd.read_csv(tmp_path / "aggregate/per_run.csv")
@@ -140,6 +143,13 @@ def test_jobs_use_identical_ids_and_aggregate(tmp_path):
     assert per_run["test_ids_hash"].nunique() == 1
     paired = pd.read_csv(tmp_path / "aggregate/paired_comparisons.csv")
     assert set(paired["k"]) == {2, 4, 6, 8}
+    confidence = pd.read_csv(tmp_path / "aggregate/bootstrap_ci.csv")
+    assert len(confidence) == 8
+    assert (confidence["confidence_level"] == 0.95).all()
+    assert confidence["balanced_accuracy_ci_lower"].le(
+        confidence["balanced_accuracy_ci_upper"]
+    ).all()
+    assert (tmp_path / "aggregate/bootstrap_comparison_k2.tex").exists()
     for suffix in ("pdf", "svg", "png"):
         assert (tmp_path / f"aggregate/aggregation_comparison.{suffix}").exists()
 
@@ -147,3 +157,35 @@ def test_jobs_use_identical_ids_and_aggregate(tmp_path):
 def test_repeated_benchmark_notebook_is_valid():
     notebook = nbformat.read("notebooks/legacy_repeated_benchmark.ipynb", as_version=4)
     assert len(notebook.cells) >= 10
+
+
+def test_patient_bootstrap_is_reproducible_and_clusters_repeated_patients():
+    frame = pd.DataFrame(
+        [
+            {
+                "dataset": "demo",
+                "model": "logistic",
+                "aggregation": "early_mean",
+                "tube": "ALL",
+                "k": 2,
+                "test_ids": ["A", "B", "C", "D"],
+                "y_true": [0, 0, 1, 1],
+                "probabilities": [[0.9, 0.1], [0.7, 0.3], [0.2, 0.8], [0.1, 0.9]],
+            },
+            {
+                "dataset": "demo",
+                "model": "logistic",
+                "aggregation": "early_mean",
+                "tube": "ALL",
+                "k": 2,
+                "test_ids": ["A", "B", "C", "D"],
+                "y_true": [0, 0, 1, 1],
+                "probabilities": [[0.8, 0.2], [0.6, 0.4], [0.3, 0.7], [0.2, 0.8]],
+            },
+        ]
+    )
+    first = patient_bootstrap_confidence_intervals(frame, iterations=100, seed=5)
+    second = patient_bootstrap_confidence_intervals(frame, iterations=100, seed=5)
+    pd.testing.assert_frame_equal(first, second)
+    assert first.loc[0, "n_unique_test_patients"] == 4
+    assert first.loc[0, "accuracy_estimate"] == 1.0

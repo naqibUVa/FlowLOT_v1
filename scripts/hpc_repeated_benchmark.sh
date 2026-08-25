@@ -145,6 +145,9 @@ aggregate() {
     --jobs "${FLOWLOT_RESULTS}/jobs.tsv"
     --shards "${FLOWLOT_RESULTS}/shards"
     --output "${FLOWLOT_RESULTS}/aggregate"
+    --bootstrap-iterations "${FLOWLOT_BOOTSTRAP_ITERATIONS:-1000}"
+    --confidence-level "${FLOWLOT_CONFIDENCE_LEVEL:-0.95}"
+    --bootstrap-seed "${FLOWLOT_BOOTSTRAP_SEED:-42}"
   )
   if [[ -n "${FLOWLOT_ALLOW_INCOMPLETE:-}" ]]; then
     aggregate_args+=(--allow-incomplete)
