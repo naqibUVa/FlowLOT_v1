@@ -126,14 +126,23 @@ def load_cytometry_file(
                 cells = np.asarray([[float(value) for value in row] for row in reader])
     elif suffix == ".fcs":
         try:
-            from flowio import FlowData
+            from flowio import FlowData, read_multiple_data_sets
+            from flowio.exceptions import MultipleDataSetsError
         except ImportError as error:
             raise ImportError("FCS ingestion requires `pip install flowlot[fcs]`") from error
-        flow = FlowData(str(path), ignore_offset_error=True)
+        try:
+            flow = FlowData(str(path), ignore_offset_error=True)
+        except MultipleDataSetsError:
+            data_sets = read_multiple_data_sets(str(path), ignore_offset_error=True)
+            if not data_sets:
+                raise ValueError(f"{path} contains no readable FCS data sets")
+            flow = data_sets[0]
         cells = np.asarray(flow.events, dtype=np.float32).reshape(-1, flow.channel_count)
         channels = flow.channels
+
         def channel(index: int) -> dict[str, object]:
             return channels.get(str(index), channels.get(index, {}))
+
         inferred = []
         for index in range(flow.channel_count):
             metadata = channel(index + 1)

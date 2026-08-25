@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 
 import h5py
 import nbformat
@@ -148,6 +150,40 @@ def test_folder_manifest_generation_and_format_readers(tmp_path):
     cells, markers = load_cytometry_file(raw / "P001_T2.csv")
     assert cells.shape == (5, 3)
     assert markers == ["A", "B", "C"]
+
+
+def test_multi_dataset_fcs_reader_selects_first_dataset(tmp_path, monkeypatch):
+    class MultipleDataSetsError(Exception):
+        pass
+
+    class FlowData:
+        def __init__(self, *_args, **_kwargs):
+            raise MultipleDataSetsError
+
+    first = SimpleNamespace(
+        events=[1.0, 2.0, 3.0, 4.0],
+        channel_count=2,
+        channels={"1": {"PnN": "event_ID"}, "2": {"PnN": "CD45", "PnS": "CD45"}},
+    )
+    second = SimpleNamespace(
+        events=[9.0, 9.0],
+        channel_count=2,
+        channels={"1": {"PnN": "X"}, "2": {"PnN": "Y"}},
+    )
+    flowio = ModuleType("flowio")
+    flowio.FlowData = FlowData
+    flowio.read_multiple_data_sets = lambda *_args, **_kwargs: [first, second]
+    exceptions = ModuleType("flowio.exceptions")
+    exceptions.MultipleDataSetsError = MultipleDataSetsError
+    monkeypatch.setitem(sys.modules, "flowio", flowio)
+    monkeypatch.setitem(sys.modules, "flowio.exceptions", exceptions)
+    source = tmp_path / "multi.fcs"
+    source.write_bytes(b"test fixture")
+
+    cells, markers = load_cytometry_file(source)
+
+    np.testing.assert_array_equal(cells, [[1.0, 2.0], [3.0, 4.0]])
+    assert markers == ["event_ID", "CD45"]
 
 
 def test_metadata_driven_manifest_for_flowcapii(tmp_path):
