@@ -19,7 +19,10 @@ from flowlot.io import (
     audit_manifest,
     audit_stage1,
     audit_stage2,
+    build_stage1_from_manifest,
+    create_manifest_from_folder,
     import_legacy_flowcode_hdf5,
+    load_cytometry_file,
 )
 from flowlot.models.fusion import EarlyTubeFusion, LateTubeFusion
 from flowlot.models.dual_task_models import LOTMLP
@@ -108,6 +111,63 @@ def test_manifest_audit_reports_missing_and_duplicate_sources(tmp_path):
     inventory, issues = audit_manifest(manifest)
     assert len(inventory) == 2
     assert set(issues["check"]) == {"source_exists", "unique_patient_tube"}
+
+
+def test_folder_manifest_generation_and_format_readers(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    np.save(raw / "P001_T1.npy", np.arange(12, dtype=np.float32).reshape(6, 2))
+    np.savetxt(
+        raw / "P001_T2.csv",
+        np.arange(15, dtype=np.float32).reshape(5, 3),
+        delimiter=",",
+        header="A,B,C",
+        comments="",
+    )
+    labels = tmp_path / "labels.csv"
+    labels.write_text("patient_id,label\nP001,AML\n", encoding="utf-8")
+    manifest = tmp_path / "manifests" / "cohort.csv"
+    frame = create_manifest_from_folder(
+        raw,
+        manifest,
+        r"(?P<patient_id>P[0-9]+)_(?P<tube_id>T[0-9]+)\.(?:npy|csv)$",
+        labels,
+        markers_by_tube={"T1": ["X", "Y"]},
+    )
+    assert frame[["patient_id", "tube_id", "label"]].values.tolist() == [
+        ["P001", "T1", "AML"],
+        ["P001", "T2", "AML"],
+    ]
+    assert not Path(frame.loc[0, "path"]).is_absolute()
+    assert frame.loc[0, "markers"] == "X;Y"
+    inventory, issues = audit_manifest(manifest)
+    assert len(inventory) == 2
+    assert issues.empty
+    cells, markers = load_cytometry_file(raw / "P001_T2.csv")
+    assert cells.shape == (5, 3)
+    assert markers == ["A", "B", "C"]
+
+
+def test_multi_count_builds_are_nested_and_preserve_original_count(tmp_path):
+    raw = tmp_path / "cells.npy"
+    cells = np.column_stack((np.arange(20), np.arange(20) + 100)).astype(np.float32)
+    np.save(raw, cells)
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text(
+        "patient_id,tube_id,path,label,markers\nP001,T1,cells.npy,AML,A;B\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "stage1.h5"
+    build_stage1_from_manifest(manifest, output, "cohort", 5, seed=42, mode="w")
+    build_stage1_from_manifest(manifest, output, "cohort", 10, seed=42, mode="a")
+    with h5py.File(output) as handle:
+        small_group = handle["cohort/5/P001_label_AML/T1"]
+        large_group = handle["cohort/10/P001_label_AML/T1"]
+        small = small_group["raw_cell_matrix"][...]
+        large = large_group["raw_cell_matrix"][...]
+        assert {tuple(row) for row in small}.issubset({tuple(row) for row in large})
+        assert small_group.attrs["counts"] == 20
+        assert large_group.attrs["counts"] == 20
 
 
 def test_legacy_flowcode_migration(tmp_path):

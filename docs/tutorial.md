@@ -8,11 +8,52 @@ source .venv/bin/activate
 pip install -e '.[fcs,notebook]'
 ```
 
-## 2. Build Stage 1 from custom tables
+## 2. Build Stage 1 from a raw-data folder
 
-Prepare one manifest row per patient/tube. CSV files may contain a header; NPY
-files specify markers in a semicolon-separated `markers` column. FCS channel
-names are inferred when markers are omitted.
+The guided route is [`notebooks/01_raw_to_stage1.ipynb`](../notebooks/01_raw_to_stage1.ipynb).
+Its first configuration cell specifies the raw folder, clinical label table,
+filename rule, output manifest, marker mapping, and requested cell counts. It
+then previews discovery and parses several real files before enabling any write.
+
+FlowLOT accepts FCS, CSV/TSV/TXT, NPY, and NPZ inputs. FCS events are read with
+FlowIO and marker names use `PnS` then `PnN`; labels are deliberately joined from
+a separate table rather than guessed from FCS metadata. Text tables use rows as
+cells and columns as markers. NPY matrices need an explicit marker mapping; NPZ
+files may include a `markers` array. The Stage 1 `counts` attribute always records
+the original event count before subsampling.
+
+A typical input layout is:
+
+```text
+raw/MyCohort/P001_T1.fcs
+raw/MyCohort/P001_T2.fcs
+raw/MyCohort/P002_T1.csv
+metadata/mycohort_labels.csv  # columns: patient_id,label
+```
+
+Generate an explicit manifest from that folder:
+
+```python
+from flowlot.io import create_manifest_from_folder
+
+create_manifest_from_folder(
+    raw_root="raw/MyCohort",
+    output="manifests/mycohort.csv",
+    filename_pattern=r"(?P<patient_id>[^/]+)_(?P<tube_id>T[0-9]+)\.(?:fcs|csv|npy)$",
+    labels="metadata/mycohort_labels.csv",
+    markers_by_tube={"T1": ["FSC-A", "SSC-A", "CD45"]},
+)
+```
+
+The expression is matched against paths relative to `raw_root` and must expose
+named `patient_id` and `tube_id` groups. The generated manifest has one row per
+patient/tube with `patient_id,tube_id,path,label,markers`. Conflicting labels,
+duplicate patient/tube files, missing labels, and unmatched supported files are
+rejected by default.
+
+To build several levels, call the builder for each count with the same seed and
+append mode. Sampling uses a seed-specific permutation, so the levels are nested
+(for example, 500 cells are a subset of 1000, which are a subset of 2000).
 
 ```bash
 flowlot-build stage1 --manifest manifest.csv --output stage1_raw_data.h5 \

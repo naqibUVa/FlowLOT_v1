@@ -21,7 +21,12 @@ def _safe_key(value: object) -> str:
     return text
 
 
-def _load_input(path: Path, marker_names: Sequence[str] | None) -> tuple[NDArray[np.float32], list[str]]:
+def load_cytometry_file(
+    path: str | Path, marker_names: Sequence[str] | None = None
+) -> tuple[NDArray[np.float32], list[str]]:
+    """Read FCS/CSV/TSV/TXT/NPY/NPZ into a cells-by-markers float32 matrix."""
+
+    path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".npy":
         cells = np.load(path)
@@ -140,14 +145,16 @@ class Stage1Builder:
         marker_names: Sequence[str] | None = None,
         seed: int = 0,
     ) -> str:
-        cells, markers = _load_input(Path(path), marker_names)
+        cells, markers = load_cytometry_file(path, marker_names)
         original_count = len(cells)
         if str(subsampled_cell_count).lower() != "all":
             count = int(subsampled_cell_count)
             if count < 1:
                 raise ValueError("subsampled_cell_count must be positive or 'all'")
             if len(cells) > count:
-                indices = np.random.default_rng(seed).choice(len(cells), count, replace=False)
+                # A seed-specific full permutation makes separately generated
+                # cell-count levels nested (e.g. 500 ⊂ 1000 ⊂ 2000).
+                indices = np.random.default_rng(seed).permutation(len(cells))[:count]
                 cells = cells[indices]
         return self.add_sample(
             dataset_name,
