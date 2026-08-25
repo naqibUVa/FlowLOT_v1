@@ -16,6 +16,9 @@ from flowlot.io import (
     Stage1Builder,
     Stage2Loader,
     Stage2Organizer,
+    audit_manifest,
+    audit_stage1,
+    audit_stage2,
     import_legacy_flowcode_hdf5,
 )
 from flowlot.models.fusion import EarlyTubeFusion, LateTubeFusion
@@ -64,6 +67,29 @@ def test_hdf5_pipeline_and_loader(tmp_path):
             "cohort/6/T2/lot_embeddings/ab/patient0_hungarian/reference_patient_ids"
         ][...]
         assert list(t2_reference_ids) == [b"P1"]
+    stage1_inventory, stage1_issues = audit_stage1(tmp_path / "stage1.h5")
+    assert len(stage1_inventory) == 3
+    assert stage1_issues.empty
+    stage2_inventories, stage2_issues = audit_stage2(stage2)
+    assert len(stage2_inventories["raw"]) == 3
+    assert len(stage2_inventories["preprocess"]) == 3
+    assert len(stage2_inventories["embeddings"]) == 2
+    assert stage2_issues.empty
+
+
+def test_manifest_audit_reports_missing_and_duplicate_sources(tmp_path):
+    source = tmp_path / "cells.npy"
+    np.save(source, np.ones((3, 2), dtype=np.float32))
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text(
+        "patient_id,tube_id,path,label,markers\n"
+        "P1,T1,cells.npy,AML,A;B\n"
+        "P1,T1,missing.npy,AML,A;B\n",
+        encoding="utf-8",
+    )
+    inventory, issues = audit_manifest(manifest)
+    assert len(inventory) == 2
+    assert set(issues["check"]) == {"source_exists", "unique_patient_tube"}
 
 
 def test_legacy_flowcode_migration(tmp_path):

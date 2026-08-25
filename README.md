@@ -66,6 +66,22 @@ flowlot-eval --stage2 stage2_analytics.h5 --dataset BLAST110 --cells 1000 \
   --fusion early --output results/blast110
 ```
 
+## Audited notebook workflow
+
+Run the focused notebooks in order:
+
+1. [`01_raw_to_stage1.ipynb`](notebooks/01_raw_to_stage1.ipynb) audits raw-file
+   manifests, builds the patient-centric HDF5, and reports per-dataset statistics.
+2. [`02_stage1_to_stage2.ipynb`](notebooks/02_stage1_to_stage2.ipynb) performs
+   tube organization/preprocessing and validates raw, processed, and LOT shapes.
+3. [`03_split_verification.ipynb`](notebooks/03_split_verification.ipynb) creates
+   and proves the balanced, nested, disjoint shared classification splits.
+4. [`04_classification_analysis.ipynb`](notebooks/04_classification_analysis.ipynb)
+   verifies HPC completion and produces rankings, bootstrap CIs, and diagnostics.
+
+The construction notebooks use explicit `RUN_BUILD`/`RUN_ORGANIZE` safety
+switches so audits can be reviewed before an HDF5 file is changed.
+
 See [the tutorial](docs/tutorial.md), [data architecture](docs/data_architecture.md),
 [shared-split HPC benchmarks](docs/repeated_benchmark.md),
 [knowledge map](docs/knowledge_map.md), and machine-readable

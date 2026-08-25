@@ -167,11 +167,14 @@ def build_stage1_from_manifest(
     dataset_name: str,
     subsampled_cell_count: str | int = "all",
     seed: int = 0,
+    mode: str = "w",
 ) -> Path:
     """Ingest a CSV with ``patient_id,tube_id,path,label[,markers]`` columns."""
 
+    if mode not in {"w", "a"}:
+        raise ValueError("mode must be 'w' or 'a'")
     manifest = Path(manifest).resolve()
-    with manifest.open(newline="", encoding="utf-8") as handle, Stage1Builder(output, "w") as builder:
+    with manifest.open(newline="", encoding="utf-8") as handle, Stage1Builder(output, mode) as builder:
         reader = csv.DictReader(handle)
         required = {"patient_id", "tube_id", "path", "label"}
         missing = required.difference(reader.fieldnames or [])
