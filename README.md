@@ -67,6 +67,7 @@ flowlot-eval --stage2 stage2_analytics.h5 --dataset BLAST110 --cells 1000 \
 ```
 
 See [the tutorial](docs/tutorial.md), [data architecture](docs/data_architecture.md),
+[shared-split HPC benchmarks](docs/repeated_benchmark.md),
 [knowledge map](docs/knowledge_map.md), and machine-readable
 [Stage 2 schema](docs/stage2_schema.json). The earlier deep baselines remain
 available through `flowlot.models.baselines` and the top-level `evaluate.py`.
