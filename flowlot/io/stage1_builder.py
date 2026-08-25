@@ -96,6 +96,55 @@ def _event_annotation_alignment(
     return eligible, raw_event_ids, annotations, original_counts
 
 
+def _flow_marker_names(flow: Any) -> list[str]:
+    """Extract channel labels across FlowIO 1.3 and 1.4 metadata layouts."""
+
+    channel_count = int(flow.channel_count)
+    channels = getattr(flow, "channels", None)
+    channels = channels if isinstance(channels, dict) else {}
+    text = getattr(flow, "text", None)
+    text = text if isinstance(text, dict) else {}
+    raw_pnn = getattr(flow, "pnn_labels", None)
+    pnn_labels = list(raw_pnn) if raw_pnn is not None else []
+    raw_pns = getattr(flow, "pns_labels", None)
+    raw_pns = raw_pns if raw_pns is not None else []
+
+    def lookup(mapping: Any, key: str) -> str:
+        if not isinstance(mapping, dict):
+            return ""
+        target = _normalized_name(key)
+        return next(
+            (str(value) for name, value in mapping.items() if _normalized_name(name) == target),
+            "",
+        )
+
+    def pns_label(index: int) -> str:
+        if isinstance(raw_pns, dict):
+            return str(raw_pns.get(index + 1, raw_pns.get(str(index + 1), "")) or "")
+        return str(raw_pns[index] or "") if index < len(raw_pns) else ""
+
+    markers: list[str] = []
+    for index in range(channel_count):
+        number = index + 1
+        metadata = channels.get(number, channels.get(str(number), {}))
+        pnn = lookup(metadata, "pnn")
+        pns = lookup(metadata, "pns")
+        if not pnn and index < len(pnn_labels):
+            pnn = str(pnn_labels[index] or "")
+        if not pns:
+            pns = pns_label(index)
+        if not pnn:
+            pnn = lookup(text, f"p{number}n")
+        if not pns:
+            pns = lookup(text, f"p{number}s")
+        # The stable event join key must not be replaced by a display description.
+        if _normalized_name(pnn) in {"eventid", "eventidentifier"}:
+            markers.append(pnn)
+        else:
+            markers.append(pns or pnn or f"channel_{number}")
+    return markers
+
+
 def load_cytometry_file(
     path: str | Path, marker_names: Sequence[str] | None = None
 ) -> tuple[NDArray[np.float32], list[str]]:
@@ -138,21 +187,13 @@ def load_cytometry_file(
                 raise ValueError(f"{path} contains no readable FCS data sets")
             flow = data_sets[0]
         cells = np.asarray(flow.events, dtype=np.float32).reshape(-1, flow.channel_count)
-        channels = flow.channels
-
-        def channel(index: int) -> dict[str, object]:
-            return channels.get(str(index), channels.get(index, {}))
-
-        inferred = []
-        for index in range(flow.channel_count):
-            metadata = channel(index + 1)
-            pnn = str(metadata.get("PnN") or "")
-            pns = str(metadata.get("PnS") or "")
-            # Preserve the join key even when PnS contains a different description.
-            if _normalized_name(pnn) in {"eventid", "eventidentifier"}:
-                inferred.append(pnn)
-            else:
-                inferred.append(pns or pnn or f"channel_{index + 1}")
+        inferred = _flow_marker_names(flow)
+        unresolved = [name for name in inferred if name.startswith("channel_")]
+        if marker_names is None and unresolved:
+            raise ValueError(
+                f"{path}: FCS metadata has no PnN/PnS name for {unresolved}; "
+                "supply markers_by_tube explicitly"
+            )
         markers = list(marker_names or inferred)
     else:
         raise ValueError(f"Unsupported input format: {path.suffix}")

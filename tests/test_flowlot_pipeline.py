@@ -187,6 +187,48 @@ def test_multi_dataset_fcs_reader_selects_first_dataset(tmp_path, monkeypatch):
     assert markers == ["event_ID", "CD45"]
 
 
+def test_fcs_markers_support_flowio_14_and_label_list_fallback(tmp_path, monkeypatch):
+    class MultipleDataSetsError(Exception):
+        pass
+
+    lower_case_metadata = SimpleNamespace(
+        events=[1.0, 10.0, 2.0, 20.0],
+        channel_count=2,
+        channels={
+            1: {"pnn": "event_ID", "pns": "Event number"},
+            2: {"pnn": "FL1-A", "pns": "CD45"},
+        },
+        pnn_labels=["event_ID", "FL1-A"],
+        pns_labels=["Event number", "CD45"],
+        text={},
+    )
+    label_list_metadata = SimpleNamespace(
+        events=[3.0, 30.0, 4.0, 40.0],
+        channel_count=2,
+        channels={},
+        pnn_labels=["event_ID", "SSC-A"],
+        pns_labels=["", "Side scatter"],
+        text={},
+    )
+    instances = iter([lower_case_metadata, label_list_metadata])
+    flowio = ModuleType("flowio")
+    flowio.FlowData = lambda *_args, **_kwargs: next(instances)
+    flowio.read_multiple_data_sets = lambda *_args, **_kwargs: []
+    exceptions = ModuleType("flowio.exceptions")
+    exceptions.MultipleDataSetsError = MultipleDataSetsError
+    monkeypatch.setitem(sys.modules, "flowio", flowio)
+    monkeypatch.setitem(sys.modules, "flowio.exceptions", exceptions)
+    first_path, second_path = tmp_path / "first.fcs", tmp_path / "second.fcs"
+    first_path.write_bytes(b"fixture")
+    second_path.write_bytes(b"fixture")
+
+    _, first_markers = load_cytometry_file(first_path)
+    _, second_markers = load_cytometry_file(second_path)
+
+    assert first_markers == ["event_ID", "CD45"]
+    assert second_markers == ["event_ID", "Side scatter"]
+
+
 def test_metadata_driven_manifest_for_flowcapii(tmp_path):
     raw = tmp_path / "FlowCAPII" / "FCS"
     raw.mkdir(parents=True)
