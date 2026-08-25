@@ -4,6 +4,7 @@ from pathlib import Path
 import h5py
 import nbformat
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LogisticRegression, Ridge
 
 from flowlot.evaluation.reporting import (
@@ -21,6 +22,7 @@ from flowlot.io import (
     audit_stage2,
     build_stage1_from_manifest,
     create_manifest_from_folder,
+    create_manifest_from_metadata,
     import_legacy_flowcode_hdf5,
     load_cytometry_file,
 )
@@ -146,6 +148,41 @@ def test_folder_manifest_generation_and_format_readers(tmp_path):
     cells, markers = load_cytometry_file(raw / "P001_T2.csv")
     assert cells.shape == (5, 3)
     assert markers == ["A", "B", "C"]
+
+
+def test_metadata_driven_manifest_for_flowcapii(tmp_path):
+    raw = tmp_path / "FlowCAPII" / "FCS"
+    raw.mkdir(parents=True)
+    np.save(raw / "sample_a.npy", np.ones((4, 2), dtype=np.float32))
+    metadata = pd.DataFrame(
+        {
+            "FCS file": ["sample_a.npy"],
+            "Individual": ["AML001"],
+            "Tube number": [2],
+            "Condition": ["AML"],
+        }
+    )
+    manifest_path = tmp_path / "manifests" / "flowcapii.csv"
+    manifest = create_manifest_from_metadata(
+        raw,
+        metadata,
+        manifest_path,
+        file_column="FCS file",
+        patient_id_column="Individual",
+        tube_id_column="Tube number",
+        label_column="Condition",
+        tube_prefix="P",
+        markers_by_tube={"P2": ["A", "B"]},
+    )
+    assert manifest.loc[0, ["patient_id", "tube_id", "label", "markers"]].tolist() == [
+        "AML001",
+        "P2",
+        "AML",
+        "A;B",
+    ]
+    inventory, issues = audit_manifest(manifest_path)
+    assert len(inventory) == 1
+    assert issues.empty
 
 
 def test_multi_count_builds_are_nested_and_preserve_original_count(tmp_path):

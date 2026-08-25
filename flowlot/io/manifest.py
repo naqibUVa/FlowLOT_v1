@@ -13,6 +13,100 @@ import pandas as pd
 SUPPORTED_INPUTS = {".fcs", ".csv", ".tsv", ".txt", ".npy", ".npz"}
 
 
+def _metadata_text(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def create_manifest_from_metadata(
+    raw_root: str | Path,
+    metadata: str | Path | pd.DataFrame,
+    output: str | Path,
+    *,
+    file_column: str,
+    patient_id_column: str,
+    tube_id_column: str,
+    label_column: str,
+    tube_prefix: str = "",
+    markers_by_tube: Mapping[str, str | Sequence[str]] | None = None,
+    relative_paths: bool = True,
+    overwrite: bool = False,
+) -> pd.DataFrame:
+    """Create a manifest when patient/tube identity is supplied by a metadata table."""
+
+    root = Path(raw_root).resolve()
+    destination = Path(output).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"Raw-data folder does not exist: {root}")
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Manifest exists: {destination}; set overwrite=True")
+    table = metadata.copy() if isinstance(metadata, pd.DataFrame) else pd.read_csv(metadata)
+    required = {file_column, patient_id_column, tube_id_column, label_column}
+    missing = required.difference(table.columns)
+    if missing:
+        raise ValueError(f"Metadata table is missing columns: {sorted(missing)}")
+    available: dict[str, Path] = {}
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_INPUTS:
+            continue
+        key = path.name.lower()
+        if key in available:
+            raise ValueError(f"Duplicate raw filename below {root}: {path.name}")
+        available[key] = path.resolve()
+
+    marker_mapping = markers_by_tube or {}
+    rows: list[dict[str, str]] = []
+    missing_files: list[str] = []
+    for row in table.itertuples(index=False, name=None):
+        record = dict(zip(table.columns, row, strict=True))
+        filename = _metadata_text(record[file_column])
+        candidates = [filename]
+        if not Path(filename).suffix:
+            candidates.extend(f"{filename}{suffix}" for suffix in (".fcs", ".FCS"))
+        source = next((available[name.lower()] for name in candidates if name.lower() in available), None)
+        if source is None:
+            missing_files.append(filename)
+            continue
+        tube_value = _metadata_text(record[tube_id_column])
+        tube = tube_value if not tube_prefix or tube_value.startswith(tube_prefix) else tube_prefix + tube_value
+        markers = marker_mapping.get(tube, "")
+        marker_text = markers if isinstance(markers, str) else ";".join(map(str, markers))
+        rows.append(
+            {
+                "patient_id": _metadata_text(record[patient_id_column]),
+                "tube_id": tube,
+                "path": str(source),
+                "label": _metadata_text(record[label_column]),
+                "markers": marker_text,
+            }
+        )
+    if missing_files:
+        raise FileNotFoundError(
+            f"Metadata references {len(missing_files)} missing raw files; examples={missing_files[:10]}"
+        )
+    manifest = pd.DataFrame(rows)
+    if manifest.empty or (manifest[["patient_id", "tube_id", "label"]] == "").any().any():
+        raise ValueError("Metadata produced no rows or empty patient/tube/label values")
+    duplicates = manifest.duplicated(["patient_id", "tube_id"], keep=False)
+    if duplicates.any():
+        raise ValueError("Metadata contains duplicate patient/tube rows")
+    patient_labels = manifest.groupby("patient_id")["label"].nunique()
+    if (patient_labels > 1).any():
+        patients = patient_labels[patient_labels > 1].index.tolist()
+        raise ValueError(f"Patients have conflicting labels across tubes: {patients[:10]}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if relative_paths:
+        manifest["path"] = [
+            os.path.relpath(path, start=destination.parent) for path in manifest["path"]
+        ]
+    manifest = manifest.sort_values(["patient_id", "tube_id"]).reset_index(drop=True)
+    manifest.to_csv(destination, index=False)
+    return manifest
+
+
 def create_manifest_from_folder(
     raw_root: str | Path,
     output: str | Path,
