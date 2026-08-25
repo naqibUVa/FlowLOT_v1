@@ -121,6 +121,7 @@ def test_folder_manifest_generation_and_format_readers(tmp_path):
     raw = tmp_path / "raw"
     raw.mkdir()
     np.save(raw / "P001_T1.npy", np.arange(12, dtype=np.float32).reshape(6, 2))
+    np.save(raw / "._P002_T1.npy", np.ones((2, 2), dtype=np.float32))
     np.savetxt(
         raw / "P001_T2.csv",
         np.arange(15, dtype=np.float32).reshape(5, 3),

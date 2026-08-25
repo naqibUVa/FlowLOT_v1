@@ -21,6 +21,14 @@ def _metadata_text(value: object) -> str:
     return str(value).strip()
 
 
+def is_ignored_input(path: str | Path, root: str | Path | None = None) -> bool:
+    """Return True for macOS AppleDouble and other hidden filesystem entries."""
+
+    path = Path(path)
+    relative = path.relative_to(root) if root is not None else path
+    return any(part.startswith(".") for part in relative.parts)
+
+
 def create_manifest_from_metadata(
     raw_root: str | Path,
     metadata: str | Path | pd.DataFrame,
@@ -50,7 +58,11 @@ def create_manifest_from_metadata(
         raise ValueError(f"Metadata table is missing columns: {sorted(missing)}")
     available: dict[str, Path] = {}
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in SUPPORTED_INPUTS:
+        if (
+            not path.is_file()
+            or path.suffix.lower() not in SUPPORTED_INPUTS
+            or is_ignored_input(path, root)
+        ):
             continue
         key = path.name.lower()
         if key in available:
@@ -150,7 +162,9 @@ def create_manifest_from_folder(
     files = sorted(
         path.resolve()
         for path in iterator
-        if path.is_file() and path.suffix.lower() in SUPPORTED_INPUTS
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_INPUTS
+        and not is_ignored_input(path, root)
     )
     if not files:
         raise ValueError(f"No supported raw files found below {root}")
