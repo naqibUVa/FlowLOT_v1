@@ -62,6 +62,29 @@ class Stage2Loader:
             path = f"{dataset}/{cell_count}/{tube}/preprocess_{preprocess_id}/{patient_id}/processed_matrix"
         return self._file()[path][...]
 
+    def population_counts(
+        self,
+        dataset: str,
+        cell_count: str | int,
+        tube: str,
+        patient_id: str,
+    ) -> dict[str, dict[str, float]]:
+        """Return sampled/original WBC, Blast, LAIP counts and percentages."""
+
+        counts = self._file()[
+            f"{dataset}/{cell_count}/{tube}/raw/{patient_id}/population_counts"
+        ]
+        population_names = _strings(counts.attrs["population_names"])
+        metric_names = _strings(counts.attrs["metric_names"])
+        values = counts[...]
+        return {
+            population: {
+                metric: float(values[row, column])
+                for column, metric in enumerate(metric_names)
+            }
+            for row, population in enumerate(population_names)
+        }
+
     def embeddings(
         self,
         dataset: str,

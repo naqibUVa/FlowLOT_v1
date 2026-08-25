@@ -104,6 +104,27 @@ def audit_manifest(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "source_format",
                 f"Unsupported extension {source.suffix!r}",
             )
+        event_labels_value = str(row.get("event_labels_path", "")).strip()
+        if event_labels_value:
+            event_labels = Path(event_labels_value)
+            if not event_labels.is_absolute():
+                event_labels = manifest.parent / event_labels
+            if not event_labels.exists():
+                _add_issue(
+                    issues,
+                    "error",
+                    location,
+                    "event_labels_exist",
+                    f"Event-label CSV is missing: {event_labels.resolve()}",
+                )
+            if not str(row.get("population_columns", "")).strip():
+                _add_issue(
+                    issues,
+                    "error",
+                    location,
+                    "population_columns",
+                    "event_labels_path requires population_columns",
+                )
     inventory = inventory.copy()
     inventory["resolved_path"] = resolved
     duplicates = inventory.duplicated(["patient_id", "tube_id"], keep=False)
@@ -210,6 +231,40 @@ def audit_stage1(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
                                 "finite_values",
                                 f"Finite fraction is {statistics['finite_fraction']:.6f}",
                             )
+                        optional_population = {
+                            "sample_event_ids",
+                            "sample_source_indices",
+                            "population_annotations",
+                            "population_counts",
+                        }
+                        present_population = optional_population.intersection(tube.keys())
+                        if present_population and present_population != optional_population:
+                            _add_issue(
+                                issues,
+                                "error",
+                                location,
+                                "population_datasets",
+                                f"Incomplete population datasets: {sorted(present_population)}",
+                            )
+                        elif present_population:
+                            annotation_shape = tube["population_annotations"].shape
+                            count_shape = tube["population_counts"].shape
+                            if annotation_shape[0] != statistics["n_cells"]:
+                                _add_issue(
+                                    issues,
+                                    "error",
+                                    location,
+                                    "population_cell_alignment",
+                                    f"Annotations {annotation_shape} versus matrix {matrix.shape}",
+                                )
+                            if annotation_shape[1] != count_shape[0] or count_shape[1] != 4:
+                                _add_issue(
+                                    issues,
+                                    "error",
+                                    location,
+                                    "population_count_shape",
+                                    f"Annotations {annotation_shape} versus counts {count_shape}",
+                                )
     return pd.DataFrame(rows), _issues_frame(issues)
 
 

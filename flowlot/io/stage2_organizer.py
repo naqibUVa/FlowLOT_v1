@@ -101,6 +101,20 @@ class Stage2Organizer:
                         compression="gzip",
                         shuffle=True,
                     )
+                    source_tube = source[str(record["source_path"])]
+                    for dataset_name in (
+                        "sample_event_ids",
+                        "sample_source_indices",
+                        "population_annotations",
+                        "population_counts",
+                    ):
+                        if dataset_name not in source_tube:
+                            continue
+                        source_tube.copy(dataset_name, patient, name=dataset_name)
+                    if "annotated_event_count" in source_tube.attrs:
+                        patient.attrs["annotated_event_count"] = source_tube.attrs[
+                            "annotated_event_count"
+                        ]
         return self.stage2_path
 
     def add_preprocess(

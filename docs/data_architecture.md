@@ -14,15 +14,29 @@ are retained as attributes or datasets.
 /{dataset_name}/{cell_count}/{patient_id}_label_{label}/{tube_id}/
     raw_cell_matrix        float32 [N_i, D_t]
     marker_descriptions    UTF-8   [D_t]
+    sample_event_ids       UTF-8   [N_i]       (optional annotated cohorts)
+    sample_source_indices  int64   [N_i]       (optional annotated cohorts)
+    population_annotations float32 [N_i, Q]    (optional WBC/Blast/LAIP indicators)
+    population_counts      float64 [Q, 4]      (optional counts and % of WBC)
     @patient_id            string
     @label                 string (lossless source value)
     @tube_id               string
     @counts                int64 (events before optional subsampling)
+    @annotated_event_count int64 (rows in the event-label CSV, when supplied)
 ```
 
 Root attributes are `schema=flowlot-stage1` and `schema_version=1.0`. Supported
 inputs are FCS (optional `flowio` extra), CSV/TSV/TXT, NPY, and NPZ. Sampling is
 without replacement and seeded.
+
+For BLAST110/LAIP29-style data, the manifest can include
+`event_labels_path,event_id_column,population_columns`. The event-label CSV is
+joined to the raw matrix through the named event-ID channel before sampling.
+`population_counts` columns are `sampled_count`, `original_count`,
+`sampled_pct_wbc`, and `original_pct_wbc`; row names are stored in its
+`population_names` attribute. Thus the original targets are computed as
+`100 * sum(Blast) / sum(WBC)` and `100 * sum(LAIP) / sum(WBC)`, never inferred
+from marker intensity.
 
 ## Stage 2: analytical tube hierarchy
 
@@ -33,7 +47,10 @@ without replacement and seeded.
 │   ├── labels                  numeric or UTF-8 [P_t]
 │   ├── cell_counts             int64 [P_t]
 │   └── marker_descriptions     UTF-8 [D_t]
-├── raw/{patient_id}/raw_cell_matrix                float32 [N_i, D_t]
+├── raw/{patient_id}/
+│   ├── raw_cell_matrix                             float32 [N_i, D_t]
+│   ├── population_annotations (optional)           float32 [N_i, Q]
+│   └── population_counts (optional)                float64 [Q, 4]
 ├── preprocess_{id}/
 │   ├── marker_subset                                  UTF-8 [d_t]
 │   ├── @arcsinh_cofactor                              float
@@ -78,9 +95,9 @@ The old path `Dataset/<dataset>/sample_<N>/patient_<id>/tube_<id>/data` maps to
 Stage 1 `raw_cell_matrix`. Old `lot_hungarian/lot` vectors were mapped point
 clouds of size `M*12`; `ordered` was `[M,12]`. Count arrays encoded BLAST110
 `[WBC_sample, blast_sample, WBC_original, blast_original]` and LAIP29 additionally
-stored LAIP quantities. These cohort-specific targets are intentionally not
-hard-coded into the general schema; import them as labels/covariates in a project
-manifest or derive them in an analysis module.
+stored LAIP quantities. When rebuilding from raw data, use the per-event label
+CSVs so these quantities and their cell-level provenance are represented by the
+optional general population datasets above.
 
 ## Validation invariants
 

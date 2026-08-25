@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import h5py
 import numpy as np
 from numpy.typing import NDArray
+import pandas as pd
 
 
 UTF8 = h5py.string_dtype("utf-8")
@@ -19,6 +20,80 @@ def _safe_key(value: object) -> str:
     if not text:
         raise ValueError("HDF5 identifiers cannot be empty")
     return text
+
+
+def _normalized_name(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
+def _event_id(value: object) -> str:
+    """Normalize CSV/FCS representations such as ``42``, ``42.0``, and whitespace."""
+
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    rounded = round(number)
+    return str(int(rounded)) if np.isfinite(number) and abs(number - rounded) < 1e-6 else text
+
+
+def _event_annotation_alignment(
+    cells: NDArray[np.float32],
+    markers: Sequence[str],
+    labels_path: str | Path,
+    event_id_column: str,
+    population_columns: Sequence[str],
+) -> tuple[NDArray[np.int64], list[str], pd.DataFrame, NDArray[np.float64]]:
+    """Match per-event CSV labels to raw matrix rows using a stable event identifier."""
+
+    marker_matches = [
+        index
+        for index, marker in enumerate(markers)
+        if _normalized_name(marker) == _normalized_name(event_id_column)
+    ]
+    if len(marker_matches) != 1:
+        raise ValueError(
+            f"Expected one {event_id_column!r} channel, found {len(marker_matches)} in {markers}"
+        )
+    raw_event_ids = [_event_id(value) for value in cells[:, marker_matches[0]]]
+    if len(raw_event_ids) != len(set(raw_event_ids)):
+        raise ValueError("Raw event IDs are not unique; event-level labels cannot be aligned safely")
+
+    annotations = pd.read_csv(labels_path)
+    requested = [event_id_column, *population_columns]
+    resolved: dict[str, str] = {}
+    for name in requested:
+        matches = [
+            column
+            for column in annotations.columns
+            if _normalized_name(column) == _normalized_name(name)
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected one {name!r} column in {labels_path}, found {len(matches)}"
+            )
+        resolved[name] = matches[0]
+    annotations = annotations[[resolved[name] for name in requested]].rename(
+        columns={resolved[name]: name for name in requested}
+    )
+    annotations[event_id_column] = annotations[event_id_column].map(_event_id)
+    if annotations[event_id_column].duplicated().any():
+        raise ValueError(f"Duplicate {event_id_column!r} values in {labels_path}")
+    for population in population_columns:
+        annotations[population] = pd.to_numeric(annotations[population], errors="raise")
+        if not np.isfinite(annotations[population].to_numpy(dtype=float)).all():
+            raise ValueError(f"Non-finite values in population column {population!r}")
+    original_counts = annotations[list(population_columns)].sum().to_numpy(dtype=np.float64)
+    annotations = annotations.set_index(event_id_column)
+    annotated_ids = set(annotations.index)
+    eligible = np.asarray(
+        [index for index, identifier in enumerate(raw_event_ids) if identifier in annotated_ids],
+        dtype=np.int64,
+    )
+    if not len(eligible):
+        raise ValueError(f"No event IDs overlap between the raw matrix and {labels_path}")
+    return eligible, raw_event_ids, annotations, original_counts
 
 
 def load_cytometry_file(
@@ -54,15 +129,21 @@ def load_cytometry_file(
             from flowio import FlowData
         except ImportError as error:
             raise ImportError("FCS ingestion requires `pip install flowlot[fcs]`") from error
-        flow = FlowData(str(path))
+        flow = FlowData(str(path), ignore_offset_error=True)
         cells = np.asarray(flow.events, dtype=np.float32).reshape(-1, flow.channel_count)
         channels = flow.channels
         def channel(index: int) -> dict[str, object]:
             return channels.get(str(index), channels.get(index, {}))
-        inferred = [
-            str(channel(i + 1).get("PnS") or channel(i + 1).get("PnN") or f"channel_{i + 1}")
-            for i in range(flow.channel_count)
-        ]
+        inferred = []
+        for index in range(flow.channel_count):
+            metadata = channel(index + 1)
+            pnn = str(metadata.get("PnN") or "")
+            pns = str(metadata.get("PnS") or "")
+            # Preserve the join key even when PnS contains a different description.
+            if _normalized_name(pnn) in {"eventid", "eventidentifier"}:
+                inferred.append(pnn)
+            else:
+                inferred.append(pns or pnn or f"channel_{index + 1}")
         markers = list(marker_names or inferred)
     else:
         raise ValueError(f"Unsupported input format: {path.suffix}")
@@ -110,6 +191,12 @@ class Stage1Builder:
         marker_descriptions: Sequence[str],
         original_count: int | None = None,
         overwrite: bool = True,
+        sample_event_ids: Sequence[str] | None = None,
+        sample_source_indices: NDArray[np.integer[Any]] | None = None,
+        population_names: Sequence[str] | None = None,
+        population_annotations: NDArray[np.floating[Any]] | None = None,
+        original_population_counts: NDArray[np.floating[Any]] | None = None,
+        annotated_event_count: int | None = None,
     ) -> str:
         cells = np.asarray(cells, dtype=np.float32)
         if cells.ndim != 2 or not cells.size or len(marker_descriptions) != cells.shape[1]:
@@ -131,6 +218,47 @@ class Stage1Builder:
         )
         group.create_dataset("raw_cell_matrix", data=cells, compression="gzip", shuffle=True)
         group.create_dataset("marker_descriptions", data=np.asarray(marker_descriptions, dtype=UTF8))
+        if population_names:
+            names = list(population_names)
+            annotations = np.asarray(population_annotations, dtype=np.float32)
+            original = np.asarray(original_population_counts, dtype=np.float64)
+            if annotations.shape != (len(cells), len(names)) or original.shape != (len(names),):
+                raise ValueError("Population annotation/count shapes do not match cells and names")
+            if sample_event_ids is None or len(sample_event_ids) != len(cells):
+                raise ValueError("sample_event_ids must align with annotated cells")
+            if sample_source_indices is None or len(sample_source_indices) != len(cells):
+                raise ValueError("sample_source_indices must align with annotated cells")
+            sampled = annotations.sum(axis=0, dtype=np.float64)
+            denominator = next(
+                (index for index, name in enumerate(names) if _normalized_name(name) == "wbc"),
+                None,
+            )
+            if denominator is None or sampled[denominator] == 0:
+                sampled_percent = np.full(len(names), np.nan)
+            else:
+                sampled_percent = 100.0 * sampled / sampled[denominator]
+            if denominator is None or original[denominator] == 0:
+                original_percent = np.full(len(names), np.nan)
+            else:
+                original_percent = 100.0 * original / original[denominator]
+            population_counts = np.column_stack(
+                (sampled, original, sampled_percent, original_percent)
+            )
+            group.attrs["annotated_event_count"] = int(annotated_event_count or len(cells))
+            group.create_dataset("sample_event_ids", data=np.asarray(sample_event_ids, dtype=UTF8))
+            group.create_dataset(
+                "sample_source_indices", data=np.asarray(sample_source_indices, dtype=np.int64)
+            )
+            annotation_dataset = group.create_dataset(
+                "population_annotations", data=annotations, compression="gzip", shuffle=True
+            )
+            annotation_dataset.attrs["population_names"] = np.asarray(names, dtype="S")
+            counts_dataset = group.create_dataset("population_counts", data=population_counts)
+            counts_dataset.attrs["population_names"] = np.asarray(names, dtype="S")
+            counts_dataset.attrs["metric_names"] = np.asarray(
+                ["sampled_count", "original_count", "sampled_pct_wbc", "original_pct_wbc"],
+                dtype="S",
+            )
         return f"/{path}"
 
     def add_file(
@@ -144,18 +272,45 @@ class Stage1Builder:
         tube_id: str,
         marker_names: Sequence[str] | None = None,
         seed: int = 0,
+        event_labels_path: str | Path | None = None,
+        event_id_column: str = "event_ID",
+        population_columns: Sequence[str] = (),
     ) -> str:
         cells, markers = load_cytometry_file(path, marker_names)
         original_count = len(cells)
+        eligible = np.arange(original_count, dtype=np.int64)
+        raw_event_ids: list[str] | None = None
+        annotations: pd.DataFrame | None = None
+        original_population_counts: NDArray[np.float64] | None = None
+        if event_labels_path is not None:
+            if not population_columns:
+                raise ValueError("population_columns are required with event_labels_path")
+            eligible, raw_event_ids, annotations, original_population_counts = (
+                _event_annotation_alignment(
+                    cells,
+                    markers,
+                    event_labels_path,
+                    event_id_column,
+                    population_columns,
+                )
+            )
         if str(subsampled_cell_count).lower() != "all":
             count = int(subsampled_cell_count)
             if count < 1:
                 raise ValueError("subsampled_cell_count must be positive or 'all'")
-            if len(cells) > count:
+            if len(eligible) > count:
                 # A seed-specific full permutation makes separately generated
                 # cell-count levels nested (e.g. 500 ⊂ 1000 ⊂ 2000).
-                indices = np.random.default_rng(seed).permutation(len(cells))[:count]
-                cells = cells[indices]
+                selected = np.random.default_rng(seed).permutation(len(eligible))[:count]
+                eligible = eligible[selected]
+        cells = cells[eligible]
+        sample_event_ids = None
+        population_annotations = None
+        if annotations is not None and raw_event_ids is not None:
+            sample_event_ids = [raw_event_ids[index] for index in eligible]
+            population_annotations = annotations.loc[
+                sample_event_ids, list(population_columns)
+            ].to_numpy(dtype=np.float32)
         return self.add_sample(
             dataset_name,
             subsampled_cell_count,
@@ -165,6 +320,12 @@ class Stage1Builder:
             cells,
             markers,
             original_count,
+            sample_event_ids=sample_event_ids,
+            sample_source_indices=eligible if annotations is not None else None,
+            population_names=population_columns,
+            population_annotations=population_annotations,
+            original_population_counts=original_population_counts,
+            annotated_event_count=len(annotations) if annotations is not None else None,
         )
 
 
@@ -192,6 +353,18 @@ def build_stage1_from_manifest(
             if not source.is_absolute():
                 source = manifest.parent / source
             markers = [item.strip() for item in row.get("markers", "").split(";") if item.strip()]
+            event_labels_path = row.get("event_labels_path", "").strip()
+            if event_labels_path:
+                event_labels = Path(event_labels_path)
+                if not event_labels.is_absolute():
+                    event_labels = manifest.parent / event_labels
+            else:
+                event_labels = None
+            populations = [
+                item.strip()
+                for item in row.get("population_columns", "").split(";")
+                if item.strip()
+            ]
             builder.add_file(
                 source,
                 dataset_name=dataset_name,
@@ -201,6 +374,9 @@ def build_stage1_from_manifest(
                 tube_id=row["tube_id"],
                 marker_names=markers or None,
                 seed=seed + row_index,
+                event_labels_path=event_labels,
+                event_id_column=row.get("event_id_column", "").strip() or "event_ID",
+                population_columns=populations,
             )
     return Path(output)
 

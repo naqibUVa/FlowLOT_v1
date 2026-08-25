@@ -99,6 +99,30 @@
             "dtype": "float32",
             "shape": ["N_i", "D_t"],
             "description": "Marker-aligned raw cells for patient i."
+          },
+          "sample_event_ids": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "utf8-string",
+            "shape": ["N_i"],
+            "description": "Optional event identifiers aligned with retained cells."
+          },
+          "sample_source_indices": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "int64",
+            "shape": ["N_i"],
+            "description": "Optional retained row positions in the original raw matrix."
+          },
+          "population_annotations": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "float32",
+            "shape": ["N_i", "Q"],
+            "description": "Optional event-level WBC/Blast/LAIP indicators; names are an HDF5 attribute."
+          },
+          "population_counts": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "float64",
+            "shape": ["Q", 4],
+            "description": "Optional sampled/original counts and sampled/original percentages of WBC."
           }
         },
         "additionalProperties": false

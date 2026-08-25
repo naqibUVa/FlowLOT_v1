@@ -25,9 +25,9 @@ the original event count before subsampling.
 A typical input layout is:
 
 ```text
-raw/MyCohort/P001_T1.fcs
-raw/MyCohort/P001_T2.fcs
-raw/MyCohort/P002_T1.csv
+raw/MyCohort/FCS/P001_T1.fcs
+raw/MyCohort/FCS/P001_T2.fcs
+raw/MyCohort/labels/P001_T1.csv  # event_ID,WBC,Blast[,LAIP]
 metadata/mycohort_labels.csv  # columns: patient_id,label
 ```
 
@@ -37,11 +37,14 @@ Generate an explicit manifest from that folder:
 from flowlot.io import create_manifest_from_folder
 
 create_manifest_from_folder(
-    raw_root="raw/MyCohort",
+    raw_root="raw/MyCohort/FCS",
     output="manifests/mycohort.csv",
     filename_pattern=r"(?P<patient_id>[^/]+)_(?P<tube_id>T[0-9]+)\.(?:fcs|csv|npy)$",
     labels="metadata/mycohort_labels.csv",
     markers_by_tube={"T1": ["FSC-A", "SSC-A", "CD45"]},
+    event_labels_root="raw/MyCohort/labels",
+    event_id_column="event_ID",
+    population_columns=["WBC", "Blast", "LAIP"],
 )
 ```
 
@@ -50,6 +53,15 @@ named `patient_id` and `tube_id` groups. The generated manifest has one row per
 patient/tube with `patient_id,tube_id,path,label,markers`. Conflicting labels,
 duplicate patient/tube files, missing labels, and unmatched supported files are
 rejected by default.
+
+BLAST110 and LAIP29 use two label layers. `sample_info.csv` provides the
+sample-level class, while `labels/<raw-file-stem>.csv` provides `event_ID` and
+binary/numeric WBC, Blast, and LAIP indicators. For the original BLAST110 table,
+set `labels_id_column="BLAST110_ID"`, `labels_label_column="sample_type"`, and
+`labels_match="file_id"` (use `LAIP29_ID` for LAIP29). FlowLOT joins the event
+CSV to the raw event-ID channel, then records sampled and original counts plus
+`100 * population_count / WBC_count`. The aligned per-event indicators are also
+stored, so every reported target remains auditable.
 
 To build several levels, call the builder for each count with the same seed and
 append mode. Sampling uses a seed-specific permutation, so the levels are nested

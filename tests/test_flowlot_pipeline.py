@@ -170,6 +170,62 @@ def test_multi_count_builds_are_nested_and_preserve_original_count(tmp_path):
         assert large_group.attrs["counts"] == 20
 
 
+def test_event_population_labels_are_aligned_counted_and_copied_to_stage2(tmp_path):
+    raw = tmp_path / "raw"
+    detailed = tmp_path / "labels"
+    raw.mkdir()
+    detailed.mkdir()
+    event_ids = np.arange(1, 11, dtype=np.float32)
+    cells = np.column_stack((event_ids, event_ids * 2, event_ids * 3))
+    np.save(raw / "BLAST110_1_P1.npy", cells)
+    (detailed / "BLAST110_1_P1.csv").write_text(
+        "event_ID,WBC,Blast,LAIP\n"
+        "1,1,1,0\n2,1,1,0\n3,1,1,1\n4,1,1,1\n5,1,0,0\n"
+        "6,1,0,0\n7,1,0,0\n8,1,0,0\n9,0,0,0\n10,0,0,0\n",
+        encoding="utf-8",
+    )
+    sample_info = tmp_path / "sample_info.csv"
+    sample_info.write_text(
+        "BLAST110_ID,sample_type\nBLAST110_1_P1,AML_Dx\n", encoding="utf-8"
+    )
+    manifest = tmp_path / "manifest.csv"
+    create_manifest_from_folder(
+        raw,
+        manifest,
+        r"BLAST110_(?P<patient_id>[0-9]+)_(?P<tube_id>P[0-9]+)\.npy$",
+        sample_info,
+        markers_by_tube={"P1": ["event_ID", "A", "B"]},
+        labels_id_column="BLAST110_ID",
+        labels_label_column="sample_type",
+        labels_match="file_id",
+        event_labels_root=detailed,
+        population_columns=["WBC", "Blast", "LAIP"],
+    )
+    stage1, stage2 = tmp_path / "stage1.h5", tmp_path / "stage2.h5"
+    build_stage1_from_manifest(manifest, stage1, "BLAST110", 5, seed=4)
+    inventory, issues = audit_stage1(stage1)
+    assert len(inventory) == 1
+    assert issues.empty
+    with h5py.File(stage1) as handle:
+        tube = handle["BLAST110/5/1_label_AML_Dx/P1"]
+        annotations = tube["population_annotations"][...]
+        counts = tube["population_counts"][...]
+        np.testing.assert_allclose(counts[:, 0], annotations.sum(axis=0))
+        np.testing.assert_allclose(counts[:, 1], [8, 4, 2])
+        np.testing.assert_allclose(counts[:, 3], [100, 50, 25])
+        selected_ids = [int(value.decode()) for value in tube["sample_event_ids"][...]]
+        np.testing.assert_array_equal(
+            tube["raw_cell_matrix"][:, 0].astype(int), selected_ids
+        )
+        assert tube.attrs["counts"] == 10
+        assert tube.attrs["annotated_event_count"] == 10
+    Stage2Organizer(stage1, stage2).organize("BLAST110", 5)
+    with Stage2Loader(stage2) as loader:
+        counts = loader.population_counts("BLAST110", 5, "P1", "1")
+        assert counts["Blast"]["original_count"] == 4
+        assert counts["LAIP"]["original_pct_wbc"] == 25
+
+
 def test_legacy_flowcode_migration(tmp_path):
     legacy, migrated = tmp_path / "legacy.h5", tmp_path / "migrated.h5"
     with h5py.File(legacy, "w") as h5:
