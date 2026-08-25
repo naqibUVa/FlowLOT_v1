@@ -90,6 +90,22 @@ def test_nested_shared_splits_and_legacy_export(tmp_path):
     with pytest.raises(ValueError, match="checksum mismatch"):
         load_registry(tmp_path / "tampered.json")
 
+    fixed_cohort = [f"P{index:03d}" for index in [*range(4, 20), *range(20, 36)]]
+    fixed = create_split_registry(
+        stage2,
+        "demo",
+        8,
+        tmp_path / "fixed.json",
+        train_per_class=(2, 4, 6, 8),
+        repeats=1,
+        test_size=0.5,
+        seed=17,
+        tubes=("T1", "T2"),
+        cohort_patient_ids=fixed_cohort,
+    )
+    assert fixed["fixed_cohort"] is True
+    assert set(fixed["labels"]) == set(fixed_cohort)
+
 
 def test_jobs_use_identical_ids_and_aggregate(tmp_path):
     stage2 = _benchmark_stage2(tmp_path / "stage2.h5")

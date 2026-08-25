@@ -80,6 +80,10 @@ Run the focused notebooks in order:
    and proves the balanced, nested, disjoint shared classification splits.
 5. [`04_classification_analysis.ipynb`](notebooks/04_classification_analysis.ipynb)
    verifies HPC completion and produces rankings, bootstrap CIs, and diagnostics.
+6. [`05_option_sensitivity_comparison.ipynb`](notebooks/05_option_sensitivity_comparison.ipynb)
+   changes one factor at a time—cell count, reference, solver, marker set,
+   reference size, representation, or Sinkhorn regularization—while holding
+   patient cohorts/splits fixed and comparing selected methods.
 
 The construction notebooks use explicit `RUN_BUILD`/`RUN_ORGANIZE` safety
 switches so audits can be reviewed before an HDF5 file is changed.

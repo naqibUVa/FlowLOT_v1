@@ -103,6 +103,7 @@ def create_split_registry(
     seed: int = 42,
     tubes: Sequence[str] | None = None,
     patient_policy: str = "intersection",
+    cohort_patient_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Create nested per-class training sets and one fixed test set per repeat."""
 
@@ -113,6 +114,19 @@ def create_split_registry(
     patient_ids, class_names, labels, resolved_tubes = _cohort_labels(
         stage2, dataset, str(cell_count), tubes, patient_policy
     )
+    if cohort_patient_ids is not None:
+        requested = set(map(str, cohort_patient_ids))
+        unknown = requested.difference(patient_ids)
+        if unknown:
+            raise ValueError(
+                f"Fixed cohort contains patients unavailable in this configuration: "
+                f"{sorted(unknown)[:10]}"
+            )
+        patient_ids = [patient for patient in patient_ids if patient in requested]
+        labels = {patient: labels[patient] for patient in patient_ids}
+        present_classes = sorted(set(labels.values()))
+        if present_classes != list(range(len(class_names))):
+            raise ValueError("Fixed cohort removes one or more label classes")
     y = np.asarray([labels[patient] for patient in patient_ids])
     counts = np.bincount(y, minlength=len(class_names))
     if np.any(counts < 2):
@@ -160,6 +174,7 @@ def create_split_registry(
         "cell_count": str(cell_count),
         "tubes": resolved_tubes,
         "patient_policy": patient_policy,
+        "fixed_cohort": cohort_patient_ids is not None,
         "class_names": class_names,
         "labels": labels,
         "train_per_class": sizes,

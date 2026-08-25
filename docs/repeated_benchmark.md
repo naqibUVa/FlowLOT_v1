@@ -99,3 +99,23 @@ The aggregate directory contains:
 
 The companion notebook `notebooks/legacy_repeated_benchmark.ipynb` audits cohort
 nesting, previews the job matrix, and explores accumulated comparisons.
+
+## One-factor sensitivity comparisons
+
+`notebooks/05_option_sensitivity_comparison.ipynb` builds controlled sweeps for
+`cell_count`, `reference`, `solver`, `marker_set`, `reference_size`,
+`representation`, or `sinkhorn_reg`. It holds all non-selected settings fixed,
+intersects patient IDs across configurations, and asserts that every option has
+identical train/test hashes. `COMPARABLE_METHODS` and `AGGREGATIONS` select the
+classifiers and fusion strategies.
+
+The notebook can run small jobs locally or write one global `sensitivity_jobs.tsv`.
+Submit the latter as a resumable Slurm array with:
+
+```bash
+export FLOWLOT_SENSITIVITY_TABLE=/absolute/path/sensitivity_jobs.tsv
+bash scripts/hpc_sensitivity_benchmark.sh submit
+```
+
+After the array completes, rerun the aggregation cells to export a combined
+bootstrap-CI CSV plus PDF/SVG/PNG factor-comparison figures.
