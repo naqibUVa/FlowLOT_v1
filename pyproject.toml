@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowlot"
+version = "0.1.0"
+description = "Linear Optimal Transport pipelines for multi-tube single-cell cytometry"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "FlowLOT contributors"}]
+dependencies = [
+  "h5py==3.12.1",
+  "matplotlib==3.9.2",
+  "nbformat==5.10.4",
+  "numpy==2.1.3",
+  "POT==0.9.5",
+  "pandas==2.2.3",
+  "pyparsing==3.2.0",
+  "scikit-learn==1.5.2",
+  "scipy==1.14.1",
+  "seaborn==0.13.2",
+  "torch==2.5.1",
+]
+
+[project.optional-dependencies]
+fcs = ["flowio==1.3.0"]
+notebook = ["jupyterlab==4.3.1", "umap-learn==0.5.7"]
+dev = ["pytest==8.3.3", "ruff==0.8.0"]
+
+[project.scripts]
+flowlot-build = "flowlot.cli.main:build_main"
+flowlot-run = "flowlot.cli.main:run_main"
+flowlot-eval = "flowlot.cli.main:eval_main"
+
+[tool.setuptools.packages.find]
+include = ["flowlot*", "models*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

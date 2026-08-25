@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowlot.dev/schema/stage2-1.0.json",
+  "title": "FlowLOT Stage 2 analytical HDF5 schema",
+  "description": "A JSON description of required HDF5 nodes. x-hdf5-* keywords describe HDF5-specific constraints.",
+  "type": "object",
+  "required": ["attributes", "datasets"],
+  "properties": {
+    "attributes": {
+      "type": "object",
+      "required": ["schema", "schema_version"],
+      "properties": {
+        "schema": {"const": "flowlot-stage2"},
+        "schema_version": {"const": "1.0"}
+      },
+      "additionalProperties": true
+    },
+    "datasets": {
+      "type": "object",
+      "description": "Dynamic top-level dataset-name groups.",
+      "additionalProperties": {"$ref": "#/$defs/datasetGroup"}
+    }
+  },
+  "$defs": {
+    "h5Dataset": {
+      "type": "object",
+      "required": ["node_type", "dtype", "shape"],
+      "properties": {
+        "node_type": {"const": "dataset"},
+        "dtype": {"type": "string"},
+        "shape": {"type": "array", "items": {"type": ["string", "integer"]}},
+        "description": {"type": "string"}
+      }
+    },
+    "datasetGroup": {
+      "type": "object",
+      "description": "Keys are cell-count levels such as all, 2048, or 10000.",
+      "additionalProperties": {"$ref": "#/$defs/cellCountGroup"}
+    },
+    "cellCountGroup": {
+      "type": "object",
+      "description": "Keys are tube/panel IDs.",
+      "additionalProperties": {"$ref": "#/$defs/tubeGroup"}
+    },
+    "tubeGroup": {
+      "type": "object",
+      "required": ["metadata", "raw"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadataGroup"},
+        "raw": {"$ref": "#/$defs/rawGroup"},
+        "preprocess_groups": {
+          "type": "object",
+          "propertyNames": {"pattern": "^preprocess_[A-Za-z0-9_.-]+$"},
+          "additionalProperties": {"$ref": "#/$defs/preprocessGroup"}
+        },
+        "lot_embeddings": {"$ref": "#/$defs/lotRoot"}
+      }
+    },
+    "metadataGroup": {
+      "type": "object",
+      "required": ["patient_ids", "labels", "cell_counts", "marker_descriptions"],
+      "properties": {
+        "patient_ids": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["P_t"],
+          "description": "Patient IDs present in this tube, defining metadata row order."
+        },
+        "labels": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "numeric-or-utf8-string",
+          "shape": ["P_t"],
+          "description": "Categorical class or continuous response."
+        },
+        "cell_counts": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "int64",
+          "shape": ["P_t"],
+          "description": "Original event counts before optional subsampling."
+        },
+        "marker_descriptions": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["D_t"],
+          "description": "Ordered common marker list for this tube."
+        }
+      },
+      "additionalProperties": false
+    },
+    "rawGroup": {
+      "type": "object",
+      "description": "Keys are patient IDs.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["raw_cell_matrix"],
+        "properties": {
+          "raw_cell_matrix": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "float32",
+            "shape": ["N_i", "D_t"],
+            "description": "Marker-aligned raw cells for patient i."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "preprocessGroup": {
+      "type": "object",
+      "required": ["attributes", "marker_subset", "patients"],
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "required": ["arcsinh_cofactor"],
+          "properties": {"arcsinh_cofactor": {"type": "number", "minimum": 0}}
+        },
+        "marker_subset": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["d_t"],
+          "description": "Ordered markers selected for this preprocessing variant."
+        },
+        "patients": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["processed_matrix"],
+            "properties": {
+              "processed_matrix": {
+                "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+                "dtype": "float32",
+                "shape": ["N_i", "d_t"],
+                "description": "Selected and optionally transformed cell matrix."
+              }
+            }
+          }
+        }
+      }
+    },
+    "lotRoot": {
+      "type": "object",
+      "description": "Keys are preprocess IDs, then <reference_type>_<solver> IDs.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"$ref": "#/$defs/embeddingGroup"}
+      }
+    },
+    "embeddingGroup": {
+      "type": "object",
+      "required": [
+        "attributes",
+        "patient_ids",
+        "reference_matrix",
+        "embeddings",
+        "transport_costs",
+        "converged",
+        "sorted_cell_matrices"
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "required": ["reference_type", "solver", "representation", "flatten_order"],
+          "properties": {
+            "reference_type": {"enum": ["patient0", "patient", "uniform", "gaussian", "barycenter", "pooled"]},
+            "solver": {"enum": ["hungarian", "linprog", "emd", "emd2", "pot", "sinkhorn"]},
+            "representation": {"enum": ["displacement", "map"]},
+            "flatten_order": {"const": "F"}
+          }
+        },
+        "patient_ids": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["P_t"]
+        },
+        "reference_patient_ids": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["R_t"],
+          "description": "Patients used to fit the reference; should be training-only in confirmatory evaluation."
+        },
+        "reference_matrix": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "float32",
+          "shape": ["M", "d_t"]
+        },
+        "embeddings": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "float32",
+          "shape": ["P_t", "M*d_t"]
+        },
+        "transport_costs": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "float64",
+          "shape": ["P_t"]
+        },
+        "converged": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "bool",
+          "shape": ["P_t"]
+        },
+        "sorted_cell_matrices": {
+          "type": "object",
+          "description": "Patient-ID keys containing barycentrically matched point clouds.",
+          "additionalProperties": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "float32",
+            "shape": ["M", "d_t"]
+          }
+        },
+        "transport_matrices": {
+          "type": "object",
+          "description": "Optional because couplings can dominate file size.",
+          "additionalProperties": {
+            "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+            "dtype": "float32",
+            "shape": ["N_i", "M"]
+          }
+        }
+      }
+    }
+  },
+  "x-hdf5-invariants": [
+    "P_t equals the length of patient_ids, labels, cell_counts, embeddings, transport_costs, and converged",
+    "D_t equals raw_cell_matrix columns and marker_descriptions length",
+    "d_t equals processed_matrix columns and marker_subset length",
+    "embedding width equals M*d_t",
+    "each transport matrix has target-cell rows and reference-point columns"
+  ]
+}

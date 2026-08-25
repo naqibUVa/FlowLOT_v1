@@ -1,62 +1,72 @@
-# FlowLOT comparable cytometry classifiers
+# FlowLOT
 
-This repository provides a shared, leakage-safe benchmark for variable-size
-single-cell cytometry samples. It includes FlowSOM, CellCNN, gated attention MIL,
-CytoSet, DGCNN, and PointNet++ baselines, plus a logistic classifier for existing
-precomputed LOT representations.
+FlowLOT is an installable Python 3.12 package for Linear Optimal Transport (LOT)
+representations of variable-size, multi-tube flow/mass cytometry samples. It
+provides patient-centric ingestion, tube-centric analytics, multiple reference
+distributions and OT solvers, missing-tube-aware prediction, and publication-grade
+benchmark reporting.
 
-## Data format
+The package formalizes the earlier exploratory `FlowCode.zip` notebooks. Those
+experiments used BLAST110 (four panels), LAIP29, and FlowCAP-II AML; sampled 500,
+1,000, or 2,000 events; aligned a preferred 12-channel subset; compared
+Hungarian, Sinkhorn, linear-programming, and EMD transport; and quantified blast
+or LAIP/WBC percentages with LOT+PLS. FlowLOT preserves the legacy Fortran-order
+LOT flattening as an explicit option while making the mathematically standard
+mass-weighted displacement embedding the default.
 
-Create a CSV manifest whose paths are relative to the manifest (or absolute):
+```mermaid
+flowchart LR
+  A[FCS / CSV / NPY] --> B[Stage 1<br/>patient → tube → raw cells]
+  B --> C[Stage 2<br/>tube → patient → processed cells]
+  C --> D[Reference factory<br/>patient / synthetic / pooled / barycenter]
+  D --> E[OT solver<br/>Hungarian / LP / EMD / Sinkhorn]
+  E --> F[LOT displacement vectors]
+  F --> G[Single-tube models]
+  F --> H[Early or late multi-tube fusion]
+  G --> I[Classification / regression reports]
+  H --> I
+  I --> J[CSV + LaTeX + PDF/SVG/PNG]
+```
+
+## Installation
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+# Optional FCS reader and notebook tools:
+pip install -e '.[fcs,notebook]'
+```
+
+## Quick start
+
+Create an ingestion manifest:
 
 ```csv
-sample_id,path,label,split,lot_path
-subject_001,cells/001.npy,0,train,lot/001.npy
-subject_002,cells/002.npz,1,validation,lot/002.npy
-subject_003,cells/003.npy,1,test,lot/003.npy
+patient_id,tube_id,path,label,markers
+P001,tube1,data/P001_t1.npy,AML,FSC-A;SSC-A;CD45;CD34
+P001,tube2,data/P001_t2.csv,AML,
+P002,tube1,data/P002_t1.fcs,control,
 ```
 
-`path` must hold a two-dimensional `[cells, markers]` matrix. NumPy `.npy` and
-`.npz`, Torch `.pt`/`.pth`, and numeric CSV/TXT files are accepted. An NPZ uses
-the `cells` key (or its only array). Labels must be contiguous integers beginning
-at zero. The split names are `train`, `validation`, and `test`. The optional
-`lot_path` is any precomputed LOT tensor; it is flattened for classification.
-
-Cell values should already have the biological transform appropriate to the
-panel (for example, an arcsinh transform). Marker standardization is estimated
-strictly from training cells and saved in each neural-network checkpoint.
-
-## Usage
-
-Install the Python 3.12 environment and train one model:
+Then build both HDF5 stages, create a marker subset, and compute LOT:
 
 ```bash
-python -m pip install -r requirements.txt
-python train.py --manifest cohort.csv --model attention_mil --output runs/mil.pt
+flowlot-build stage1 --manifest manifest.csv --output stage1_raw_data.h5 \
+  --dataset BLAST110 --cells 1000
+flowlot-build stage2 --stage1 stage1_raw_data.h5 --output stage2_analytics.h5 \
+  --dataset BLAST110 --cells 1000
+flowlot-build preprocess --stage2 stage2_analytics.h5 --dataset BLAST110 \
+  --cells 1000 --id common12 \
+  --markers FSC-A,FSC-H,SSC-A,SSC-H,FITC-A,PE-A,PerCP-A,PC7-A,APC-A,APC-H7-A,'Horizon V450-A','Horizon V500-A'
+flowlot-run --stage2 stage2_analytics.h5 --dataset BLAST110 --cells 1000 \
+  --preprocess common12 --reference patient0 --solver sinkhorn
+flowlot-eval --stage2 stage2_analytics.h5 --dataset BLAST110 --cells 1000 \
+  --preprocess common12 --embedding patient0_sinkhorn --task classification \
+  --fusion early --output results/blast110
 ```
 
-Run the full baseline benchmark:
-
-```bash
-python evaluate.py --manifest cohort.csv \
-  --models lot,flowsom,cellcnn,attention_mil,cytoset,dgcnn,pointnet2 \
-  --output-dir benchmark_results
-```
-
-The evaluator writes `metrics.json`, `metrics.csv`, and deep-model checkpoints.
-Every method reports subject-level accuracy, balanced accuracy, macro F1,
-one-vs-rest macro ROC-AUC, and macro PR-AUC. For large cohorts, tune
-`--max-cells`; training draws a fresh uniform subset while validation/test use a
-deterministic subset. DGCNN computes k-NN distances in chunks, but graph methods
-remain quadratic in the number of sampled cells.
-
-## Python API
-
-All deep models implement the same call:
-
-```python
-logits = model(cells, mask)  # [batch, max_cells, markers], [batch, max_cells]
-```
-
-Attention weights for cell-level interpretation are available through
-`AttentionMIL(...)(cells, mask, return_attention=True)`.
+See [the tutorial](docs/tutorial.md), [data architecture](docs/data_architecture.md),
+[knowledge map](docs/knowledge_map.md), and machine-readable
+[Stage 2 schema](docs/stage2_schema.json). The earlier deep baselines remain
+available through `flowlot.models.baselines` and the top-level `evaluate.py`.
