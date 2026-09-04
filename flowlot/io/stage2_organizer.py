@@ -124,6 +124,7 @@ class Stage2Organizer:
         preprocess_id: str,
         marker_subset: Sequence[str] | Mapping[str, Sequence[str]] | None = None,
         arcsinh_cofactor: float | None = None,
+        skip_tubes: Sequence[str] = (),
         overwrite: bool = True,
     ) -> None:
         """Create marker-aligned processed matrices for every tube and patient."""
@@ -133,6 +134,8 @@ class Stage2Organizer:
             if base not in h5:
                 raise KeyError(f"Stage 2 group /{base} does not exist")
             for tube_id, tube in h5[base].items():
+                if tube_id in set(skip_tubes):
+                    continue
                 group_name = f"preprocess_{preprocess_id}"
                 if group_name in tube:
                     if not overwrite:
@@ -149,7 +152,9 @@ class Stage2Organizer:
                 preprocess.attrs["arcsinh_cofactor"] = arcsinh_cofactor or 0.0
                 preprocess.create_dataset("marker_subset", data=np.asarray(selected, dtype=UTF8))
                 for patient_id, patient in tube["raw"].items():
-                    cells = patient["raw_cell_matrix"][..., indices].astype(np.float32)
+                    # Read first, then reorder in memory; h5py requires fancy indices
+                    # to be increasing, while semantic panels may intentionally reorder markers.
+                    cells = np.asarray(patient["raw_cell_matrix"][...], dtype=np.float32)[:, indices]
                     if arcsinh_cofactor is not None:
                         if arcsinh_cofactor <= 0:
                             raise ValueError("arcsinh_cofactor must be positive")

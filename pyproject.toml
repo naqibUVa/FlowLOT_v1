@@ -7,7 +7,7 @@ name = "flowlot"
 version = "0.1.0"
 description = "Linear Optimal Transport pipelines for multi-tube single-cell cytometry"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 license = "MIT"
 authors = [{name = "FlowLOT contributors"}]
 dependencies = [
@@ -20,8 +20,10 @@ dependencies = [
   "pyparsing==3.2.0",
   "scikit-learn==1.5.2",
   "scipy==1.14.1",
+  "scikit-image==0.24.0",
   "seaborn==0.13.2",
   "torch==2.5.1",
+  "pytranskit==0.3.1",
 ]
 
 [project.optional-dependencies]

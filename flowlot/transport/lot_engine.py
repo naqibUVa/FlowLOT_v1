@@ -9,11 +9,12 @@ from typing import Any, Sequence
 
 import h5py
 import numpy as np
+from pytranskit.optrans.lot import LinearOptimalTransport
 from numpy.typing import ArrayLike, NDArray
 
 from flowlot.reference import ReferenceFactory
 
-from .solvers import TransportResult, solve_transport
+from pytranskit.optrans.lot.solvers import TransportResult
 
 
 UTF8 = h5py.string_dtype("utf-8")
@@ -115,25 +116,20 @@ def compute_lot(
     representation: str = "displacement",
     **solver_kwargs: Any,
 ) -> LOTResult:
-    reference = np.asarray(reference, dtype=np.float64)
-    target = np.asarray(target, dtype=np.float64)
-    transport = solve_transport(target, reference, solver=solver, **solver_kwargs)
-    reference_weights = transport.coupling.sum(axis=0)
-    transported = reference.copy()
-    active = reference_weights > np.finfo(float).eps
-    transported[active] = (
-        transport.coupling[:, active].T @ target
-    ) / reference_weights[active, None]
-    displacement = (transported - reference) * np.sqrt(reference_weights[:, None])
-    if representation == "displacement":
-        matrix = displacement
-    elif representation in {"map", "legacy_map"}:
-        matrix = transported
-    else:
-        raise ValueError("representation must be 'displacement' or 'map'")
-    # Fortran order preserves the earlier FlowCode convention: one marker block at a time.
-    embedding = matrix.reshape(-1, order="F")
-    return LOTResult(reference, transported, displacement, embedding, transport)
+    transformer = LinearOptimalTransport(
+        reference=np.asarray(reference, dtype=np.float64),
+        solver=solver,
+        representation=representation,
+        solver_kwargs=solver_kwargs,
+    )
+    result = transformer.transform_sample(np.asarray(target, dtype=np.float64))
+    return LOTResult(
+        reference=np.asarray(result.reference, dtype=np.float64),
+        transported=np.asarray(result.transported, dtype=np.float64),
+        displacement=np.asarray(result.displacement, dtype=np.float64),
+        embedding=np.asarray(result.embedding, dtype=np.float64),
+        transport=result.transport,
+    )
 
 
 def compute_stage2_embeddings(
