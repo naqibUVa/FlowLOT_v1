@@ -20,9 +20,15 @@ FloatArray = NDArray[np.float64]
 class NearestSubspaceClassifier(ClassifierMixin, BaseEstimator):
     """Mean-centered class subspaces scored by reconstruction distance."""
 
-    def __init__(self, n_components: int = 5, energy_threshold: float | None = None) -> None:
+    def __init__(
+        self,
+        n_components: int | str | None = 5,
+        energy_threshold: float | None = None,
+        centered: bool = True,
+    ) -> None:
         self.n_components = n_components
         self.energy_threshold = energy_threshold
+        self.centered = centered
 
     def fit(self, features: ArrayLike, labels: ArrayLike) -> "NearestSubspaceClassifier":
         features = np.asarray(features, dtype=float)
@@ -32,15 +38,27 @@ class NearestSubspaceClassifier(ClassifierMixin, BaseEstimator):
         self.subspaces_: dict[Any, FloatArray] = {}
         for label in self.classes_:
             values = features[labels == label]
-            mean = values.mean(axis=0)
-            centered = values - mean
+            if self.centered:
+                mean = values.mean(axis=0)
+                centered = values - mean
+            else:
+                mean = np.zeros(values.shape[1], dtype=float)
+                centered = values
             basis, singular, _ = np.linalg.svd(centered.T, full_matrices=False)
             if self.energy_threshold is not None and np.square(singular).sum() > 0:
                 cumulative = np.cumsum(np.square(singular)) / np.square(singular).sum()
                 rank = int(np.searchsorted(cumulative, self.energy_threshold) + 1)
+            elif (
+                self.n_components is not None
+                and self.n_components != "full"
+                and isinstance(self.n_components, (int, np.integer))
+                and self.n_components > 0
+            ):
+                rank = int(self.n_components)
             else:
-                rank = self.n_components
-            rank = max(1, min(rank, max(len(values) - 1, 1), basis.shape[1]))
+                rank = basis.shape[1]
+            max_possible_rank = max(len(values) - 1, 1) if self.centered else len(values)
+            rank = max(1, min(rank, max_possible_rank, basis.shape[1]))
             self.means_[label] = mean
             self.subspaces_[label] = basis[:, :rank]
         return self
@@ -72,6 +90,7 @@ CLASSICAL_MODELS = (
     "extra_trees",
     "nsc",
     "nsc_energy",
+    "nsc_full",
     "xgboost",
 )
 CELL_MODELS = ("flowsom", "cellcnn", "attention_mil", "cytoset", "dgcnn", "pointnet2")
@@ -108,6 +127,10 @@ def make_classical_classifier(name: str, random_state: int = 0) -> Any:
     if name == "nsc_energy":
         return make_pipeline(
             StandardScaler(), NearestSubspaceClassifier(energy_threshold=0.95)
+        )
+    if name == "nsc_full":
+        return make_pipeline(
+            StandardScaler(), NearestSubspaceClassifier(n_components="full")
         )
     if name == "xgboost":
         try:

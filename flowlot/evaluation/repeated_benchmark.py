@@ -61,6 +61,7 @@ def _cohort_labels(
     cell_count: str,
     requested_tubes: Sequence[str] | None,
     patient_policy: str,
+    classes: Sequence[str] | None = None,
 ) -> tuple[list[str], list[str], dict[str, int], list[str]]:
     with Stage2Loader(stage2) as loader:
         available_tubes = loader.tubes(dataset, cell_count)
@@ -86,6 +87,11 @@ def _cohort_labels(
     else:
         raise ValueError("patient_policy must be intersection or union")
     patient_ids = sorted(patients)
+    if classes is not None:
+        target_classes = set(map(str, classes))
+        patient_ids = [p for p in patient_ids if str(raw_labels[p]) in target_classes]
+        if not patient_ids:
+            raise ValueError(f"No patients found for requested classes: {classes}")
     text_labels = [str(raw_labels[patient]) for patient in patient_ids]
     encoder = LabelEncoder().fit(text_labels)
     encoded = encoder.transform(text_labels)
@@ -104,6 +110,7 @@ def create_split_registry(
     tubes: Sequence[str] | None = None,
     patient_policy: str = "intersection",
     cohort_patient_ids: Sequence[str] | None = None,
+    classes: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Create nested per-class training sets and one fixed test set per repeat."""
 
@@ -112,7 +119,7 @@ def create_split_registry(
     if not sizes or sizes[0] < 1:
         raise ValueError("train_per_class must contain positive integers")
     patient_ids, class_names, labels, resolved_tubes = _cohort_labels(
-        stage2, dataset, str(cell_count), tubes, patient_policy
+        stage2, dataset, str(cell_count), tubes, patient_policy, classes=classes
     )
     if cohort_patient_ids is not None:
         requested = set(map(str, cohort_patient_ids))
@@ -757,6 +764,8 @@ def aggregate_results(
     duplicates: set[str] = set()
     observed: set[str] = set()
     for path in sorted(Path(shards_dir).glob("*.json")):
+        if path.name.startswith("."):
+            continue
         result = json.loads(path.read_text(encoding="utf-8"))
         if result["registry_hash"] != registry["registry_hash"]:
             raise ValueError(f"Shard {path} was generated from a different split registry")
@@ -910,6 +919,7 @@ def _parser() -> argparse.ArgumentParser:
     splits.add_argument("--seed", type=int, default=42)
     splits.add_argument("--tubes", help="Comma-separated; default is every tube")
     splits.add_argument("--patient-policy", choices=["intersection", "union"], default="intersection")
+    splits.add_argument("--classes", help="Comma-separated subset of classes to include")
     splits.add_argument(
         "--legacy-h5", type=Path, help="Also export the historical HDF5 split layout"
     )
@@ -960,6 +970,7 @@ def main() -> None:
             args.seed,
             _parse_csv(args.tubes) if args.tubes else None,
             args.patient_policy,
+            classes=_parse_csv(args.classes) if getattr(args, "classes", None) else None,
         )
         if args.legacy_h5:
             export_legacy_splits_h5(result, args.legacy_h5)

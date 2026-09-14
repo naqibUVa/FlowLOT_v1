@@ -12,7 +12,7 @@ class CellCNN(nn.Module):
     """Learn phenotype filters and aggregate their strongest cell responses.
 
     A kernel-size-one convolution is the direct analogue of applying each learned
-    CellCnn filter independently to every cell. ``topk_fraction`` reproduces the
+    CellCnn filter independently to every cell. ''topk_fraction'' reproduces the
     original multi-instance top-k pooling; set it to 1 for mean pooling.
     """
 

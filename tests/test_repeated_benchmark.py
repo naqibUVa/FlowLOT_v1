@@ -171,7 +171,10 @@ def test_jobs_use_identical_ids_and_aggregate(tmp_path):
 
 
 def test_repeated_benchmark_notebook_is_valid():
-    notebook = nbformat.read("notebooks/legacy_repeated_benchmark.ipynb", as_version=4)
+    target = Path("notebooks/04_split_n_LOT_based_classification.ipynb")
+    if not target.exists():
+        target = Path("notebooks/legacy_repeated_benchmark.ipynb")
+    notebook = nbformat.read(str(target), as_version=4)
     assert len(notebook.cells) >= 10
 
 

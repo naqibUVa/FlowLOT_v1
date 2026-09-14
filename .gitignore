@@ -14,10 +14,46 @@ data/manifests/
 data/stage1/
 data/stage2/
 data/results/
-# redundant
-docs
-tests
+data/stage1_old/
+data/results_earlier/
+Processed_data/
+
+# OS and editor files
+.DS_Store
+**/.DS_Store
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.virtual_documents/
+.vscode/
+*.log
+._*
+.aider*
+
+# Environment configs (cluster paths / local configs)
+*.env
+scripts/*.env
+!scripts/repeated_benchmark.env.example
+
+# Scratch and extended experimental folders
+scratch/
+notebooks_extended_work/
+notebooks_extended_works/
+quant_all_cells/
+quant_final_dxfu/
+notebooks/quant_all_cells/
+notebooks/quant_final_dxfu/
+
+# Root generated figures and tables
+/*.png
+/*.pdf
+/*.csv
+
+# LaTeX build artifacts
+Latex/*.aux
+Latex/*.log
+Latex/*.out
+
+# Redundant legacy markers
 scripyts
 notebooks2
 AGENTS.md
-._*

@@ -132,6 +132,33 @@ def compute_lot(
     )
 
 
+def _solve_lot_single_patient(
+    patient_id: str,
+    sample: np.ndarray,
+    reference: np.ndarray,
+    solver: str,
+    solver_kwargs: dict[str, Any],
+    store_transport: bool,
+) -> tuple[str, np.ndarray, np.ndarray, float, bool, np.ndarray, np.ndarray | None]:
+    result = compute_lot(
+        reference,
+        sample,
+        solver=solver,
+        representation="displacement",
+        **(solver_kwargs or {}),
+    )
+    coupling = result.transport.coupling.astype(np.float32) if store_transport else None
+    return (
+        patient_id,
+        result.transported.flatten("F").astype(np.float32),
+        result.displacement.flatten("F").astype(np.float32),
+        float(result.transport.cost),
+        bool(result.transport.converged),
+        result.transported.astype(np.float32),
+        coupling,
+    )
+
+
 def compute_stage2_embeddings(
     stage2_path: str | Path,
     dataset_name: str,
@@ -148,8 +175,18 @@ def compute_stage2_embeddings(
     reference_kwargs: dict[str, Any] | None = None,
     solver_kwargs: dict[str, Any] | None = None,
     embedding_id: str | None = None,
+    reference_matrix: ArrayLike | None = None,
+    freeze_reference: bool = True,
+    n_jobs: int = 1,
 ) -> dict[str, tuple[int, int]]:
-    """Compute one common reference and all patient LOT vectors per tube."""
+    """Compute one common reference and all patient LOT vectors per tube.
+    
+    Supports representation='both' to compute OT once and store both '_map'
+    and '_disp' representations simultaneously, cutting solver time by 50%.
+    Also saves and re-uses persistent references under tube['references'] so
+    re-running or clicking does not change or re-sample the reference.
+    When n_jobs > 1, patient LOT solves within each tube are computed in parallel.
+    """
 
     base = f"{dataset_name}/{subsampled_cell_count}"
     shapes: dict[str, tuple[int, int]] = {}
@@ -177,74 +214,181 @@ def compute_stage2_embeddings(
             ]
             if not selected_reference_ids:
                 raise ValueError(f"Tube {tube_id} has no requested reference patients")
-            reference_datasets = [
-                process[patient_id]["processed_matrix"] for patient_id in selected_reference_ids
-            ]
-            reference = _reference_from_h5(
-                reference_datasets,
-                reference_type,
-                size,
-                random_state,
-                reference_kwargs or {},
-            )
+
+            # Check or load persistent reference
+            ref_store_key = f"{reference_type}_size{size}"
+            if reference_kwargs and "max_patients" in reference_kwargs:
+                ref_store_key += f"_p{reference_kwargs['max_patients']}"
+            ref_group = tube.require_group("references")
+
+            if reference_matrix is not None:
+                reference = np.asarray(reference_matrix, dtype=np.float64)
+                if ref_store_key not in ref_group and freeze_reference:
+                    r_out = ref_group.create_group(ref_store_key)
+                    r_out.create_dataset("reference_matrix", data=reference.astype(np.float32))
+                    r_out.create_dataset(
+                        "reference_patient_ids", data=np.asarray(selected_reference_ids, dtype=UTF8)
+                    )
+                    r_out.attrs.update(
+                        reference_type=reference_type, reference_size=size, random_state=random_state
+                    )
+            elif ref_store_key in ref_group and not overwrite:
+                reference = np.asarray(
+                    ref_group[ref_store_key]["reference_matrix"][...], dtype=np.float64
+                )
+            else:
+                reference_datasets = [
+                    process[patient_id]["processed_matrix"] for patient_id in selected_reference_ids
+                ]
+                reference = _reference_from_h5(
+                    reference_datasets,
+                    reference_type,
+                    size,
+                    random_state,
+                    reference_kwargs or {},
+                )
+                if freeze_reference:
+                    if ref_store_key in ref_group:
+                        del ref_group[ref_store_key]
+                    r_out = ref_group.create_group(ref_store_key)
+                    r_out.create_dataset("reference_matrix", data=reference.astype(np.float32))
+                    r_out.create_dataset(
+                        "reference_patient_ids", data=np.asarray(selected_reference_ids, dtype=UTF8)
+                    )
+                    r_out.attrs.update(
+                        reference_type=reference_type, reference_size=size, random_state=random_state
+                    )
+
             resolved_embedding_id = embedding_id or f"{reference_type}_{solver}"
             if not resolved_embedding_id.strip() or "/" in resolved_embedding_id:
                 raise ValueError("embedding_id must be a non-empty HDF5 key without '/'")
+
             root = tube.require_group(f"lot_embeddings/{preprocess_id}")
-            if resolved_embedding_id in root:
-                if not overwrite:
-                    raise ValueError(
-                        f"Embedding {resolved_embedding_id} already exists in tube {tube_id}"
+
+            # Determine whether to store both map and displacement
+            is_dual = representation.lower() in {"both", "dual"}
+            if is_dual:
+                base_id = resolved_embedding_id
+                for suffix in ["_map", "_disp", "_displacement"]:
+                    if base_id.endswith(suffix):
+                        base_id = base_id[: -len(suffix)]
+                        break
+                target_reps = [("map", f"{base_id}_map"), ("displacement", f"{base_id}_disp")]
+            else:
+                target_reps = [(representation, resolved_embedding_id)]
+
+            # Check existence
+            for rep_name, target_id in target_reps:
+                if target_id in root:
+                    if not overwrite:
+                        raise ValueError(f"Embedding {target_id} already exists in tube {tube_id}")
+                    del root[target_id]
+
+            # Solve optimal transport
+            if n_jobs > 1 and len(patient_ids) > 1:
+                from concurrent.futures import ProcessPoolExecutor
+                patient_data = [
+                    (pid, np.asarray(process[pid]["processed_matrix"][...], dtype=np.float64))
+                    for pid in patient_ids
+                ]
+                with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+                    futures = [
+                        pool.submit(
+                            _solve_lot_single_patient,
+                            pid,
+                            mat,
+                            reference,
+                            solver,
+                            solver_kwargs or {},
+                            store_transport,
+                        )
+                        for pid, mat in patient_data
+                    ]
+                    results = [f.result() for f in futures]
+
+                map_embeddings = [r[1] for r in results]
+                disp_embeddings = [r[2] for r in results]
+                costs = [r[3] for r in results]
+                convergence = [r[4] for r in results]
+                sorted_cell_dict = {r[0]: r[5] for r in results}
+                transport_dict = {r[0]: r[6] for r in results if r[6] is not None}
+            else:
+                map_embeddings = []
+                disp_embeddings = []
+                costs = []
+                convergence = []
+                sorted_cell_dict = {}
+                transport_dict = {}
+
+                for patient_id in patient_ids:
+                    sample = process[patient_id]["processed_matrix"][...]
+                    result = compute_lot(
+                        reference,
+                        sample,
+                        solver=solver,
+                        representation="displacement",  # compute_lot computes BOTH transported and displacement
+                        **(solver_kwargs or {}),
                     )
-                del root[resolved_embedding_id]
-            output = root.create_group(resolved_embedding_id)
-            output.attrs.update(
-                reference_type=reference_type,
-                solver=solver,
-                representation=representation,
-                flatten_order="F",
-                random_state=random_state,
-                reference_size=size,
-                store_transport=store_transport,
-                reference_kwargs_json=json.dumps(
-                    reference_kwargs or {}, sort_keys=True, default=str
-                ),
-                solver_kwargs_json=json.dumps(solver_kwargs or {}, sort_keys=True, default=str),
-            )
-            output.create_dataset("reference_matrix", data=reference.astype(np.float32))
-            output.create_dataset("patient_ids", data=np.asarray(patient_ids, dtype=UTF8))
-            output.create_dataset(
-                "reference_patient_ids", data=np.asarray(selected_reference_ids, dtype=UTF8)
-            )
-            sorted_group = output.create_group("sorted_cell_matrices")
-            transport_group = output.create_group("transport_matrices") if store_transport else None
-            embeddings = []
-            costs = []
-            convergence = []
-            for patient_id in patient_ids:
-                sample = process[patient_id]["processed_matrix"][...]
-                result = compute_lot(
-                    reference,
-                    sample,
+                    map_embeddings.append(result.transported.flatten("F").astype(np.float32))
+                    disp_embeddings.append(result.displacement.flatten("F").astype(np.float32))
+                    costs.append(result.transport.cost)
+                    convergence.append(result.transport.converged)
+                    sorted_cell_dict[patient_id] = result.transported.astype(np.float32)
+                    if store_transport:
+                        transport_dict[patient_id] = result.transport.coupling.astype(np.float32)
+
+            # Store the resulting groups
+            for rep_name, target_id in target_reps:
+                out = root.create_group(target_id)
+                out.attrs.update(
+                    reference_type=reference_type,
                     solver=solver,
-                    representation=representation,
-                    **(solver_kwargs or {}),
+                    representation=rep_name,
+                    flatten_order="F",
+                    random_state=random_state,
+                    reference_size=size,
+                    store_transport=store_transport,
+                    reference_kwargs_json=json.dumps(
+                        reference_kwargs or {}, sort_keys=True, default=str
+                    ),
+                    solver_kwargs_json=json.dumps(solver_kwargs or {}, sort_keys=True, default=str),
                 )
-                embeddings.append(result.embedding.astype(np.float32))
-                costs.append(result.transport.cost)
-                convergence.append(result.transport.converged)
-                sorted_group.create_dataset(
-                    patient_id, data=result.transported.astype(np.float32), compression="gzip"
+                out.create_dataset("reference_matrix", data=reference.astype(np.float32))
+                out.create_dataset("patient_ids", data=np.asarray(patient_ids, dtype=UTF8))
+                out.create_dataset(
+                    "reference_patient_ids", data=np.asarray(selected_reference_ids, dtype=UTF8)
                 )
-                if transport_group is not None:
-                    transport_group.create_dataset(
-                        patient_id,
-                        data=result.transport.coupling.astype(np.float32),
-                        compression="gzip",
-                    )
-            matrix = np.stack(embeddings)
-            output.create_dataset("embeddings", data=matrix, compression="gzip")
-            output.create_dataset("transport_costs", data=np.asarray(costs))
-            output.create_dataset("converged", data=np.asarray(convergence, dtype=np.bool_))
-            shapes[tube_id] = matrix.shape
+                out.create_dataset("transport_costs", data=np.asarray(costs))
+                out.create_dataset("converged", data=np.asarray(convergence, dtype=np.bool_))
+
+                if (
+                    is_dual
+                    and rep_name == "displacement"
+                    and f"{base_id}_map" in root
+                    and "sorted_cell_matrices" in root[f"{base_id}_map"]
+                ):
+                    out["sorted_cell_matrices"] = root[f"{base_id}_map"]["sorted_cell_matrices"]
+                else:
+                    s_grp = out.create_group("sorted_cell_matrices")
+                    for pid, smat in sorted_cell_dict.items():
+                        s_grp.create_dataset(pid, data=smat, compression="lzf")
+
+                if store_transport:
+                    if (
+                        is_dual
+                        and rep_name == "displacement"
+                        and f"{base_id}_map" in root
+                        and "transport_matrices" in root[f"{base_id}_map"]
+                    ):
+                        out["transport_matrices"] = root[f"{base_id}_map"]["transport_matrices"]
+                    else:
+                        t_grp = out.create_group("transport_matrices")
+                        for pid, cmat in transport_dict.items():
+                            t_grp.create_dataset(pid, data=cmat, compression="lzf")
+
+                emb_matrix = np.stack(map_embeddings if rep_name == "map" else disp_embeddings)
+                out.create_dataset("embeddings", data=emb_matrix, compression="gzip")
+                shapes[tube_id] = emb_matrix.shape
+
     return shapes
+

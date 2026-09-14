@@ -5,6 +5,8 @@
 
 set -euo pipefail
 
+export PATH="/opt/slurm/current/bin:$PATH"
+
 ACTION=${1:-help}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CONFIG=${FLOWLOT_CONFIG:-"${SCRIPT_DIR}/repeated_benchmark.env"}
@@ -33,6 +35,7 @@ activate_environment() {
     source "${FLOWLOT_ENV_ACTIVATE}"
   fi
   export MPLBACKEND=Agg
+  export HDF5_USE_FILE_LOCKING=FALSE
   export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-${FLOWLOT_CPUS:-4}}
   export MKL_NUM_THREADS=${OMP_NUM_THREADS}
 }
@@ -62,6 +65,9 @@ initialize() {
   )
   if [[ -n "${FLOWLOT_TUBES:-}" ]]; then
     split_args+=(--tubes "${FLOWLOT_TUBES}")
+  fi
+  if [[ -n "${FLOWLOT_CLASSES:-}" ]]; then
+    split_args+=(--classes "${FLOWLOT_CLASSES}")
   fi
   run_module "${split_args[@]}"
   run_module jobs \
@@ -118,7 +124,7 @@ submit_array() {
   # shellcheck disable=SC2086
   sbatch ${FLOWLOT_SBATCH_ARGS:-} \
     --job-name=flowlot-repeat \
-    --array="0-${upper}%${concurrency}" \
+    --array="${FLOWLOT_ARRAY_RANGE:-0-${upper}}%${concurrency}" \
     --output="${FLOWLOT_RESULTS}/logs/%A_%a.out" \
     --error="${FLOWLOT_RESULTS}/logs/%A_%a.err" \
     --export="ALL,FLOWLOT_CONFIG=${CONFIG}" \
@@ -155,20 +161,52 @@ aggregate() {
   run_module "${aggregate_args[@]}"
 }
 
+status() {
+  require_var FLOWLOT_RESULTS
+  if [[ ! -f "${FLOWLOT_RESULTS}/jobs.tsv" ]]; then
+    echo "Benchmark not initialized yet in ${FLOWLOT_RESULTS}"
+    return 0
+  fi
+  local total completed pct
+  total=$(($(wc -l < "${FLOWLOT_RESULTS}/jobs.tsv") - 1))
+  completed=$(find "${FLOWLOT_RESULTS}/shards" -name "*.json" ! -name "._*" 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "${total}" -gt 0 ]]; then
+    pct=$(awk "BEGIN { printf \"%.1f\", (${completed} / ${total}) * 100 }")
+  else
+    pct="0.0"
+  fi
+  echo "========================================================"
+  echo "Benchmark:    $(basename "${FLOWLOT_RESULTS}")"
+  echo "Directory:    ${FLOWLOT_RESULTS}"
+  echo "Progress:     ${completed} / ${total} shards completed (${pct}%)"
+  if [[ -f "${FLOWLOT_RESULTS}/aggregate/summary.csv" ]]; then
+    echo "Aggregated:   Yes (${FLOWLOT_RESULTS}/aggregate/summary.csv exists)"
+  else
+    echo "Aggregated:   No (run '$0 aggregate' when completed)"
+  fi
+  if command -v squeue >/dev/null 2>&1; then
+    echo "---------------- Active Slurm Tasks --------------------"
+    squeue -u "${USER:-$(whoami)}" --name=flowlot-repeat || true
+  fi
+  echo "========================================================"
+}
+
 case "${ACTION}" in
   init) initialize ;;
   submit) submit_array ;;
   worker) worker ;;
   local) run_local ;;
+  status) status ;;
   aggregate) aggregate ;;
   *)
     cat <<'HELP'
-Usage: hpc_repeated_benchmark.sh {init|submit|worker|local|aggregate}
+Usage: hpc_repeated_benchmark.sh {init|submit|worker|local|status|aggregate}
 
   init       Create immutable shared splits and jobs.tsv.
   submit     Submit jobs.tsv as a resumable Slurm array.
   worker     Execute FLOWLOT_JOB_INDEX or SLURM_ARRAY_TASK_ID.
   local      Run all jobs locally with FLOWLOT_LOCAL_JOBS workers.
+  status     Check completed shards vs total planned jobs and active Slurm tasks.
   aggregate  Validate completeness and create CSV/LaTeX/vector comparisons.
 
 Set FLOWLOT_CONFIG to a copy of repeated_benchmark.env.example.
