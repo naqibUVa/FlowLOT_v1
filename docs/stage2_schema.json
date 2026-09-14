@@ -53,6 +53,7 @@
           "propertyNames": {"pattern": "^preprocess_[A-Za-z0-9_.-]+$"},
           "additionalProperties": {"$ref": "#/$defs/preprocessGroup"}
         },
+        "references": {"$ref": "#/$defs/referenceRoot"},
         "lot_embeddings": {"$ref": "#/$defs/lotRoot"}
       }
     },
@@ -159,6 +160,39 @@
           }
         }
       }
+    },
+    "referenceRoot": {
+      "type": "object",
+      "description": "Keys are persistent reference IDs such as <reference_type>_size<M>[_p<P>].",
+      "additionalProperties": {"$ref": "#/$defs/referenceGroup"}
+    },
+    "referenceGroup": {
+      "type": "object",
+      "required": ["attributes", "reference_matrix", "reference_patient_ids"],
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "required": ["reference_type", "reference_size", "random_state"],
+          "properties": {
+            "reference_type": {"enum": ["patient0", "patient", "uniform", "gaussian", "barycenter", "pooled"]},
+            "reference_size": {"type": "integer", "minimum": 1},
+            "random_state": {"type": "integer"}
+          }
+        },
+        "reference_matrix": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "float32",
+          "shape": ["M", "d_t"],
+          "description": "Stored reference cell matrix points."
+        },
+        "reference_patient_ids": {
+          "allOf": [{"$ref": "#/$defs/h5Dataset"}],
+          "dtype": "utf8-string",
+          "shape": ["R_t"],
+          "description": "Patients used to fit the reference template."
+        }
+      },
+      "additionalProperties": false
     },
     "lotRoot": {
       "type": "object",

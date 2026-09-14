@@ -55,7 +55,12 @@ from marker intensity.
 │   ├── marker_subset                                  UTF-8 [d_t]
 │   ├── @arcsinh_cofactor                              float
 │   └── {patient_id}/processed_matrix                float32 [N_i, d_t]
-└── lot_embeddings/{preprocess_id}/{reference}_{solver}/
+├── references/ (persistent cached templates)
+│   └── {reference_type}_size{size}[_p{max_patients}]/
+│       ├── @reference_type, @reference_size, @random_state
+│       ├── reference_matrix                         float32 [M, d_t]
+│       └── reference_patient_ids                    UTF-8 [R_t]
+└── lot_embeddings/{preprocess_id}/{reference}_{solver}[_repr]/
     ├── @reference_type, @solver, @representation, @flatten_order
     ├── @random_state, @reference_size, @store_transport
     ├── @reference_kwargs_json, @solver_kwargs_json
@@ -70,9 +75,17 @@ from marker intensity.
 ```
 
 The final embedding key may be customized (for example,
-`pooled_sinkhorn_disp_run0`) so representations or split-specific references do
-not overwrite one another. `notebooks/03_lot_embeddings.ipynb` constructs and
-audits a grid of these stored representations.
+`patient0_sinkhorn_disp`, `barycenter_emd_map`, or split-specific runs)
+so representations or split-specific references do not overwrite one another.
+[`notebooks/NB03_lot_embeddings.ipynb`](../notebooks/NB03_lot_embeddings.ipynb) constructs and
+audits these stored representations across solvers and reference types.
+
+### Persistent reference caching
+To ensure template reproducibility and avoid stochastic re-sampling between runs, references are cached under `tube["references"][ref_store_key]`. If `freeze_reference=True` (the default), subsequent pipeline steps reuse the frozen template rather than re-fitting or drifting.
+
+### Dual representations and compression
+When `representation="both"` is selected, FlowLOT solves the Monge/Kantorovich transport problem once and generates both `{base_id}_map` and `{base_id}_disp` embedding groups in parallel. The heavy point-cloud and coupling nodes (`sorted_cell_matrices` and `transport_matrices`) in the displacement group are stored as internal HDF5 links to the map group, cutting OT solver runtime by 50% without duplicating data on disk.
+Point clouds and transport couplings utilize fast `lzf` chunked compression, while dense patient embedding matrices use `gzip` compression.
 
 `marker_policy=intersection` aligns every sample in a tube to the ordered
 intersection of the first sample's markers; `strict` rejects any mismatch.
@@ -80,22 +93,22 @@ Different tubes may have different marker sets and dimensions.
 
 ### LOT tensor convention
 
-The coupling `Γ` has shape `[N_target, M_reference]`, row marginal `a`, and
-column marginal `b`. The barycentric map is
+The coupling $\Gamma$ has shape $[N_{\text{target}}, M_{\text{reference}}]$, row marginal $a$, and
+column marginal $b$. The barycentric map is
 
-`T(X0)_j = sum_i Γ[i,j] X_i / b_j`.
+$$T(X_0)_j = \sum_i \Gamma_{ij} X_i / b_j.$$
 
 The default LOT matrix is the mass-weighted displacement
-`sqrt(b_j) * (T(X0)_j - X0_j)`, flattened in Fortran order to preserve contiguous
-marker blocks. `representation=map` stores the earlier FlowCode behavior instead.
+$\sqrt{b_j} (T(X_0)_j - X_{0,j})$, flattened in Fortran order (`order="F"`) to preserve contiguous
+marker blocks across reference anchors. `representation="map"` stores the transported template points $T(X_0)_j$ instead.
 
 ## Legacy archive mapping
 
 The old path `Dataset/<dataset>/sample_<N>/patient_<id>/tube_<id>/data` maps to
 Stage 1 `raw_cell_matrix`. Old `lot_hungarian/lot` vectors were mapped point
-clouds of size `M*12`; `ordered` was `[M,12]`. Count arrays encoded BLAST110
+clouds of size $M \times 12$; `ordered` was $[M, 12]$. Count arrays encoded BLAST110
 `[WBC_sample, blast_sample, WBC_original, blast_original]` and LAIP29 additionally
-stored LAIP quantities. When rebuilding from raw data, use the per-event label
+stored LAIP quantities. When rebuilding from raw data via [`notebooks/NB01_Sampling_from_Raw_measurements.ipynb`](../notebooks/NB01_Sampling_from_Raw_measurements.ipynb), use the per-event label
 CSVs so these quantities and their cell-level provenance are represented by the
 optional general population datasets above.
 
@@ -108,3 +121,5 @@ optional general population datasets above.
 - `embedding_width == reference_rows * selected_marker_count`.
 - Patient-level train/validation/test partitions are established before fitting
   preprocessing, references, imputers, or models in confirmatory experiments.
+- The earlier deep baselines remain available through `flowlot.models.baselines` and the top-level `evaluate.py`.
+
